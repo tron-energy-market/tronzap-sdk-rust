@@ -420,3 +420,18 @@ async fn concurrent_calls_share_one_client() {
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 32);
 }
+
+#[tokio::test]
+async fn signs_a_non_ascii_request_body() {
+    let server = MockServer::start().await;
+    respond(
+        &server,
+        "/v1/transaction/new",
+        ok(transaction("energy", json!({"address": ADDRESS, "amounts": {"energy": 65000}, "duration": 1}))),
+    )
+    .await;
+
+    let request = EnergyTransactionRequest::new(ADDRESS, 65000).external_id("pedido-año-订单-😀");
+    client(&server).create_energy_transaction(&request).await.unwrap();
+    assert_eq!(only_request(&server).await["external_id"], "pedido-año-订单-😀");
+}
