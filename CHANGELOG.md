@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file. The format is b
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Deprecated
+
+- `EnergyRate::min_energy` and `EnergyRate::max_energy`: use `min_amount` and `max_amount`.
+- `Calculation::energy` and `EnergyEstimate::energy`: use `amount`.
+
+The deprecated fields stay and always equal their replacements: they are now filled from `min_amount`, `max_amount`
+and `amount`, and the deprecated fields of the API responses are no longer read.
+
+### Fixed
+
+- `EnergyRate::price` is the price of 1000 units of energy, like `BandwidthRate::price`, not of one unit. The rustdoc,
+  the README and the example said otherwise: 65000 energy at a price of 0.03 costs 1.95.
+- `DirectRechargeRate::price` is the price of 1000 units of energy as well, not of one unit.
+
 ## [1.0.0] - 2026-10-06
 
 First release of the official Rust SDK for the [TronZap API](https://docs.tronzap.com/).
@@ -22,4 +38,5 @@ First release of the official Rust SDK for the [TronZap API](https://docs.tronza
   HTTP status, API error code, error key, request ID, `Retry-After` delay and raw response body.
 - `rustls` (default), `native-tls` and `system-proxy` features.
 
+[Unreleased]: https://github.com/tron-energy-market/tronzap-sdk-rust/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/tron-energy-market/tronzap-sdk-rust/releases/tag/v1.0.0

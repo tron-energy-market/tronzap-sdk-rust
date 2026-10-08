@@ -45,7 +45,7 @@ const MAX_RESPONSE_BYTES: usize = 8 << 20;
 ///     .estimate_energy(&EstimateEnergyRequest::new("TSenderAddress", "TRecipientAddress"))
 ///     .await?;
 ///
-/// let request = EnergyTransactionRequest::new("TRecipientAddress", estimate.energy)
+/// let request = EnergyTransactionRequest::new("TRecipientAddress", estimate.amount)
 ///     .external_id("order-42");
 /// let tx = client.create_energy_transaction(&request).await?;
 /// println!("transaction {} costs {} and is {}", tx.id, tx.amount, tx.status);

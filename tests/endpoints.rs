@@ -35,9 +35,8 @@ async fn get_services() {
         &server,
         "/v1/services",
         ok(json!({
-            "energy": [{"duration": 1, "min_amount": 32000, "max_amount": 10000000, "min_energy": 32000,
-                        "max_energy": 10000000, "price": "0.0841", "price_32k": 2.69, "price_65k": 5.47,
-                        "price_131k": 11.02}],
+            "energy": [{"duration": 1, "min_amount": 65000, "max_amount": 10000000, "price": "0.03",
+                        "price_32k": 0.96, "price_65k": 1.95, "price_131k": 3.93}],
             "bandwidth": [{"duration": 1, "min_amount": 300, "max_amount": 100000, "price": 1}],
             "activate_address": {"price": 1.4}
         })),
@@ -47,8 +46,9 @@ async fn get_services() {
     let services = client(&server).get_services().await.unwrap();
     assert_eq!(only_request(&server).await, json!({}));
     assert_eq!(services.energy.len(), 1);
-    assert_eq!(services.energy[0].price.to_string(), "0.0841");
-    assert_eq!(services.energy[0].price_65k.to_string(), "5.47");
+    assert_eq!(services.energy[0].min_amount, 65000);
+    assert_eq!(services.energy[0].price.to_string(), "0.03");
+    assert_eq!(services.energy[0].price_65k.to_string(), "1.95");
     assert_eq!(services.bandwidth[0].min_amount, 300);
     assert_eq!(services.activate_address.unwrap().price.to_string(), "1.4");
 }
@@ -87,7 +87,7 @@ async fn estimate_energy() {
     respond(
         &server,
         "/v1/estimate-energy",
-        ok(json!({"amount": 65000, "energy": 65000, "duration": 1, "price": 5.47, "activation_fee": 0,
+        ok(json!({"amount": 65000, "duration": 1, "price": 5.47, "activation_fee": 0,
                   "total": 5.47, "from_address": "TFrom", "to_address": ADDRESS,
                   "contract_address": USDT_CONTRACT_ADDRESS})),
     )
@@ -96,7 +96,7 @@ async fn estimate_energy() {
     let request = EstimateEnergyRequest::new("TFrom", ADDRESS);
     let estimate = client(&server).estimate_energy(&request).await.unwrap();
     assert_eq!(only_request(&server).await, json!({"from_address": "TFrom", "to_address": ADDRESS}));
-    assert_eq!(estimate.energy, 65000);
+    assert_eq!(estimate.amount, 65000);
     assert_eq!(estimate.total.to_string(), "5.47");
     assert_eq!(estimate.contract_address, USDT_CONTRACT_ADDRESS);
 }
@@ -120,7 +120,7 @@ async fn calculate() {
     respond(
         &server,
         "/v1/calculate",
-        ok(json!({"address": ADDRESS, "type": "energy", "amount": 65000, "energy": 65000, "duration": 24,
+        ok(json!({"address": ADDRESS, "type": "energy", "amount": 65000, "duration": 24,
                   "price": "5.47", "activation_fee": "1.4", "total": "6.87"})),
     )
     .await;
@@ -129,6 +129,7 @@ async fn calculate() {
     let calculation = client(&server).calculate(&request).await.unwrap();
     assert_eq!(only_request(&server).await, json!({"address": ADDRESS, "amount": 65000, "duration": 24}));
     assert_eq!(calculation.service, Service::Energy);
+    assert_eq!(calculation.amount, 65000);
     assert_eq!(calculation.duration, 24);
     assert_eq!(calculation.total.to_string(), "6.87");
 }

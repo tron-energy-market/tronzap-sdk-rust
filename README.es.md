@@ -55,7 +55,7 @@ async fn main() -> Result<(), tronzap_sdk::TronzapError> {
         .estimate_energy(&EstimateEnergyRequest::new("TSenderAddress", "TRecipientAddress"))
         .await?;
 
-    let request = EnergyTransactionRequest::new("TRecipientAddress", estimate.energy)
+    let request = EnergyTransactionRequest::new("TRecipientAddress", estimate.amount)
         .duration(1)
         .external_id("order-42")
         .activate_address(true);
@@ -217,9 +217,10 @@ async fn buy(client: &TronzapClient) -> tronzap_sdk::Result<()> {
 }
 ```
 
-El precio de la energía es por unidad y el del bandwidth es por 1000 unidades: en
-`get_services()`, `EnergyRate::price` × 65000 es el costo de 65000 de energía,
-mientras que 345 de bandwidth con un `BandwidthRate::price` de 1 cuestan 0.345.
+Los precios de la energía y del bandwidth son ambos por 1000 unidades: en
+`get_services()`, 65000 de energía con un `EnergyRate::price` de 0.03 cuestan
+0.03 × 65000 / 1000 = 1.95, y 345 de bandwidth con un `BandwidthRate::price` de 1
+cuestan 0.345.
 
 Actualmente la API devuelve un resource bundle con `service` igual a
 `Service::Energy`, no `Service::ResourceBundle`. Lee `params.amounts` para saber
@@ -367,7 +368,7 @@ Los importes y precios son [`rust_decimal::Decimal`](https://docs.rs/rust_decima
 reexportado como `tronzap_sdk::models::Decimal`: aritmética decimal exacta y
 `1.50 == 1.5`. La API codifica el dinero como número JSON en algunas respuestas y
 como cadena JSON en otras; ambas formas se leen igual. Por ejemplo, el costo de
-65000 de energía es `rate.price * Decimal::from(65000)`.
+65000 de energía es `rate.price * Decimal::from(65000) / Decimal::from(1000)`.
 
 Las fechas son `Timestamp`: `as_str()` es el texto exactamente como lo envió la
 API, y `unix_timestamp()` y `to_system_time()` lo interpretan. Se aceptan los

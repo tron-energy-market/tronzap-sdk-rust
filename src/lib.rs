@@ -26,7 +26,7 @@
 //!         .await?;
 //!     let tx = client
 //!         .create_energy_transaction(
-//!             &EnergyTransactionRequest::new("TRecipientAddress", estimate.energy).external_id("order-42"),
+//!             &EnergyTransactionRequest::new("TRecipientAddress", estimate.amount).external_id("order-42"),
 //!         )
 //!         .await?;
 //!     println!("transaction {} costs {} and is {}", tx.id, tx.amount, tx.status);

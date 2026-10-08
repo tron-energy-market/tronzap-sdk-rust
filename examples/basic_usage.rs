@@ -64,8 +64,8 @@ async fn main() -> ExitCode {
     run.step("get_services", client.get_services().await, |s| {
         for rate in &s.energy {
             println!(
-                "  energy {}h {}..{} at {} per unit (65k = {})",
-                rate.duration, rate.min_energy, rate.max_energy, rate.price, rate.price_65k
+                "  energy {}h {}..{} at {} per 1000 units (65k = {})",
+                rate.duration, rate.min_amount, rate.max_amount, rate.price, rate.price_65k
             );
         }
         for rate in &s.bandwidth {
@@ -104,7 +104,7 @@ async fn main() -> ExitCode {
             });
             let request = CalculateRequest::new(address.as_str(), ENERGY);
             run.step("calculate", client.calculate(&request).await, |c| {
-                println!("  {} energy for {}h costs {}", c.energy, c.duration, c.total);
+                println!("  {} energy for {}h costs {}", c.amount, c.duration, c.total);
             });
         }
         None => {
@@ -117,7 +117,7 @@ async fn main() -> ExitCode {
         (Some(from), Some(to)) => {
             let request = EstimateEnergyRequest::new(from, to);
             run.step("estimate_energy", client.estimate_energy(&request).await, |e| {
-                println!("  {} energy, total {}", e.energy, e.total);
+                println!("  {} energy, total {}", e.amount, e.total);
             });
         }
         _ => Run::skip("estimate_energy"),

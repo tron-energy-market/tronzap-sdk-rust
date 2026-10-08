@@ -55,7 +55,7 @@ async fn main() -> Result<(), tronzap_sdk::TronzapError> {
         .estimate_energy(&EstimateEnergyRequest::new("TSenderAddress", "TRecipientAddress"))
         .await?;
 
-    let request = EnergyTransactionRequest::new("TRecipientAddress", estimate.energy)
+    let request = EnergyTransactionRequest::new("TRecipientAddress", estimate.amount)
         .duration(1)
         .external_id("order-42")
         .activate_address(true);
@@ -218,8 +218,8 @@ async fn buy(client: &TronzapClient) -> tronzap_sdk::Result<()> {
 }
 ```
 
-Цена энергии указана за единицу, а цена bandwidth — за 1000 единиц: в
-`get_services()` `EnergyRate::price` × 65000 — это стоимость 65000 энергии, а 345
+Цены энергии и bandwidth указаны за 1000 единиц: в `get_services()` 65000 энергии
+при `EnergyRate::price`, равном 0.03, стоят 0.03 × 65000 / 1000 = 1.95, а 345
 bandwidth при `BandwidthRate::price`, равном 1, стоят 0.345.
 
 Сейчас API возвращает resource bundle с `service`, равным `Service::Energy`, а не
@@ -364,7 +364,7 @@ async fn buy(client: &TronzapClient) {
 реэкспортированный как `tronzap_sdk::models::Decimal`: точная десятичная
 арифметика и `1.50 == 1.5`. API кодирует деньги в одних ответах как JSON-число, а
 в других как JSON-строку; обе формы читаются одинаково. Например, стоимость 65000
-энергии — это `rate.price * Decimal::from(65000)`.
+энергии — это `rate.price * Decimal::from(65000) / Decimal::from(1000)`.
 
 Даты имеют тип `Timestamp`: `as_str()` — текст в точности как прислал API, а
 `unix_timestamp()` и `to_system_time()` его разбирают. Принимаются все форматы,

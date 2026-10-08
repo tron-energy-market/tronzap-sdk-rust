@@ -31,36 +31,69 @@ pub struct Services {
 
 /// One energy price tier.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "RawEnergyRate")]
 #[non_exhaustive]
 pub struct EnergyRate {
     /// The rental duration in hours.
-    #[serde(default, deserialize_with = "de::u32")]
     pub duration: u32,
     /// The smallest amount in this tier.
-    #[serde(default, deserialize_with = "de::u64")]
     pub min_amount: u64,
     /// The largest amount in this tier.
-    #[serde(default, deserialize_with = "de::u64")]
     pub max_amount: u64,
-    /// The smallest energy amount in this tier.
-    #[serde(default, deserialize_with = "de::u64")]
+    /// The smallest energy amount in this tier. Always equal to `min_amount`.
+    #[deprecated(since = "1.1.0", note = "use `min_amount`")]
     pub min_energy: u64,
-    /// The largest energy amount in this tier.
-    #[serde(default, deserialize_with = "de::u64")]
+    /// The largest energy amount in this tier. Always equal to `max_amount`.
+    #[deprecated(since = "1.1.0", note = "use `max_amount`")]
     pub max_energy: u64,
-    /// The price of **one unit** of energy. Bandwidth is priced per 1000 units
-    /// instead, see [`BandwidthRate::price`].
-    #[serde(default, with = "de::decimal")]
+    /// The price of **1000 units** of energy: 65000 energy at a price of 0.03
+    /// costs 1.95. Bandwidth is priced the same way, see [`BandwidthRate::price`].
+    #[serde(with = "de::decimal")]
     pub price: Decimal,
     /// The price of 32,000 energy.
-    #[serde(default, with = "de::decimal")]
+    #[serde(with = "de::decimal")]
     pub price_32k: Decimal,
     /// The price of 65,000 energy.
-    #[serde(default, with = "de::decimal")]
+    #[serde(with = "de::decimal")]
     pub price_65k: Decimal,
     /// The price of 131,000 energy.
-    #[serde(default, with = "de::decimal")]
+    #[serde(with = "de::decimal")]
     pub price_131k: Decimal,
+}
+
+#[derive(Deserialize)]
+struct RawEnergyRate {
+    #[serde(default, deserialize_with = "de::u32")]
+    duration: u32,
+    #[serde(default, deserialize_with = "de::u64")]
+    min_amount: u64,
+    #[serde(default, deserialize_with = "de::u64")]
+    max_amount: u64,
+    #[serde(default, with = "de::decimal")]
+    price: Decimal,
+    #[serde(default, with = "de::decimal")]
+    price_32k: Decimal,
+    #[serde(default, with = "de::decimal")]
+    price_65k: Decimal,
+    #[serde(default, with = "de::decimal")]
+    price_131k: Decimal,
+}
+
+impl From<RawEnergyRate> for EnergyRate {
+    #[allow(deprecated)]
+    fn from(raw: RawEnergyRate) -> Self {
+        EnergyRate {
+            duration: raw.duration,
+            min_amount: raw.min_amount,
+            max_amount: raw.max_amount,
+            min_energy: raw.min_amount,
+            max_energy: raw.max_amount,
+            price: raw.price,
+            price_32k: raw.price_32k,
+            price_65k: raw.price_65k,
+            price_131k: raw.price_131k,
+        }
+    }
 }
 
 /// One bandwidth price tier.
@@ -77,7 +110,7 @@ pub struct BandwidthRate {
     #[serde(default, deserialize_with = "de::u64")]
     pub max_amount: u64,
     /// The price of **1000 units** of bandwidth: 345 bandwidth at a price of 1
-    /// costs 0.345. Energy is priced per single unit instead.
+    /// costs 0.345. Energy is priced the same way, see [`EnergyRate::price`].
     #[serde(default, with = "de::decimal")]
     pub price: Decimal,
 }
@@ -148,65 +181,130 @@ pub struct Resources {
 
 /// The energy a transfer needs, and its cost.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "RawEnergyEstimate")]
 #[non_exhaustive]
 pub struct EnergyEstimate {
-    /// The estimated resource amount.
-    #[serde(default, deserialize_with = "de::u64")]
-    pub amount: u64,
     /// The estimated energy. Buy this much to cover the transfer.
-    #[serde(default, deserialize_with = "de::u64")]
+    pub amount: u64,
+    /// The estimated energy. Always equal to `amount`.
+    #[deprecated(since = "1.1.0", note = "use `amount`")]
     pub energy: u64,
     /// The rental duration in hours the price refers to.
-    #[serde(default, deserialize_with = "de::u32")]
     pub duration: u32,
     /// The cost of the energy.
-    #[serde(default, with = "de::decimal")]
+    #[serde(with = "de::decimal")]
     pub price: Decimal,
     /// The address activation fee included in `total`, if any.
-    #[serde(default, with = "de::decimal")]
+    #[serde(with = "de::decimal")]
     pub activation_fee: Decimal,
     /// The total cost.
-    #[serde(default, with = "de::decimal")]
+    #[serde(with = "de::decimal")]
     pub total: Decimal,
     /// The sender address.
-    #[serde(default, deserialize_with = "de::string")]
     pub from_address: String,
     /// The recipient address.
-    #[serde(default, deserialize_with = "de::string")]
     pub to_address: String,
     /// The token contract the estimate refers to.
-    #[serde(default, deserialize_with = "de::string")]
     pub contract_address: String,
+}
+
+#[derive(Deserialize)]
+struct RawEnergyEstimate {
+    #[serde(default, deserialize_with = "de::u64")]
+    amount: u64,
+    #[serde(default, deserialize_with = "de::u32")]
+    duration: u32,
+    #[serde(default, with = "de::decimal")]
+    price: Decimal,
+    #[serde(default, with = "de::decimal")]
+    activation_fee: Decimal,
+    #[serde(default, with = "de::decimal")]
+    total: Decimal,
+    #[serde(default, deserialize_with = "de::string")]
+    from_address: String,
+    #[serde(default, deserialize_with = "de::string")]
+    to_address: String,
+    #[serde(default, deserialize_with = "de::string")]
+    contract_address: String,
+}
+
+impl From<RawEnergyEstimate> for EnergyEstimate {
+    #[allow(deprecated)]
+    fn from(raw: RawEnergyEstimate) -> Self {
+        EnergyEstimate {
+            amount: raw.amount,
+            energy: raw.amount,
+            duration: raw.duration,
+            price: raw.price,
+            activation_fee: raw.activation_fee,
+            total: raw.total,
+            from_address: raw.from_address,
+            to_address: raw.to_address,
+            contract_address: raw.contract_address,
+        }
+    }
 }
 
 /// The price of a purchase.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "RawCalculation")]
 #[non_exhaustive]
 pub struct Calculation {
     /// The address the price was calculated for.
-    #[serde(default, deserialize_with = "de::string")]
     pub address: String,
     /// The priced service.
-    #[serde(rename = "type", default = "de::unknown", deserialize_with = "de::wire_enum")]
+    #[serde(rename = "type")]
     pub service: Service,
     /// The priced resource amount.
-    #[serde(default, deserialize_with = "de::u64")]
     pub amount: u64,
-    /// The priced energy amount.
-    #[serde(default, deserialize_with = "de::u64")]
+    /// The priced energy amount. Always equal to `amount`.
+    #[deprecated(since = "1.1.0", note = "use `amount`")]
     pub energy: u64,
     /// The rental duration in hours.
-    #[serde(default, deserialize_with = "de::u32")]
     pub duration: u32,
     /// The cost of the resources.
-    #[serde(default, with = "de::decimal")]
+    #[serde(with = "de::decimal")]
     pub price: Decimal,
     /// The address activation fee included in `total`, if any.
-    #[serde(default, with = "de::decimal")]
+    #[serde(with = "de::decimal")]
     pub activation_fee: Decimal,
     /// The total cost.
-    #[serde(default, with = "de::decimal")]
+    #[serde(with = "de::decimal")]
     pub total: Decimal,
+}
+
+#[derive(Deserialize)]
+struct RawCalculation {
+    #[serde(default, deserialize_with = "de::string")]
+    address: String,
+    #[serde(rename = "type", default = "de::unknown", deserialize_with = "de::wire_enum")]
+    service: Service,
+    #[serde(default, deserialize_with = "de::u64")]
+    amount: u64,
+    #[serde(default, deserialize_with = "de::u32")]
+    duration: u32,
+    #[serde(default, with = "de::decimal")]
+    price: Decimal,
+    #[serde(default, with = "de::decimal")]
+    activation_fee: Decimal,
+    #[serde(default, with = "de::decimal")]
+    total: Decimal,
+}
+
+impl From<RawCalculation> for Calculation {
+    #[allow(deprecated)]
+    fn from(raw: RawCalculation) -> Self {
+        Calculation {
+            address: raw.address,
+            service: raw.service,
+            amount: raw.amount,
+            energy: raw.amount,
+            duration: raw.duration,
+            price: raw.price,
+            activation_fee: raw.activation_fee,
+            total: raw.total,
+        }
+    }
 }
 
 /// A resource purchase or an address activation.
@@ -356,7 +454,7 @@ pub struct DirectRechargeRate {
     /// The largest energy amount in this tier.
     #[serde(default, deserialize_with = "de::u64")]
     pub max_energy: u64,
-    /// The price of one unit of energy.
+    /// The price of 1000 units of energy.
     #[serde(default, with = "de::decimal")]
     pub price: Decimal,
     /// The price of 32,000 energy.
@@ -548,14 +646,55 @@ mod tests {
     #[test]
     fn services_decode() {
         let s: Services = decode(json!({
-            "energy": [{"duration": 1, "min_energy": 32000, "max_energy": 10000000, "price": "0.0841",
-                        "price_32k": 2.69, "price_65k": "5.47", "price_131k": 11.02}],
+            "energy": [{"duration": 1, "min_amount": 65000, "max_amount": 10000000, "price": "0.03",
+                        "price_32k": 0.96, "price_65k": "1.95", "price_131k": 3.93}],
             "bandwidth": [{"duration": 1, "min_amount": 300, "max_amount": 100000, "price": 1}],
             "activate_address": {"price": "1.4"}
         }));
-        assert_eq!(s.energy[0].price.to_string(), "0.0841");
-        assert_eq!(s.energy[0].price_65k.to_string(), "5.47");
+        assert_eq!(s.energy[0].price.to_string(), "0.03");
+        assert_eq!(s.energy[0].price_65k.to_string(), "1.95");
+        assert_eq!(s.energy[0].price * Decimal::from(65000) / Decimal::from(1000), s.energy[0].price_65k);
         assert_eq!(s.bandwidth[0].price.to_string(), "1");
         assert_eq!(s.activate_address.map(|a| a.price.to_string()), Some("1.4".to_owned()));
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn deprecated_energy_rate_fields_mirror_amounts() {
+        let rate: EnergyRate = decode(json!({"min_amount": 65000, "max_amount": "10000000"}));
+        assert_eq!((rate.min_energy, rate.max_energy), (65000, 10_000_000));
+        let rate: EnergyRate = decode(
+            json!({"min_amount": 65000, "max_amount": 10000000, "min_energy": 32000, "max_energy": 5000000}),
+        );
+        assert_eq!((rate.min_amount, rate.max_amount), (65000, 10_000_000));
+        assert_eq!((rate.min_energy, rate.max_energy), (65000, 10_000_000));
+        let rate: EnergyRate = decode(json!({"min_energy": 32000, "max_energy": 5000000}));
+        assert_eq!((rate.min_energy, rate.max_energy), (0, 0));
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn deprecated_energy_fields_mirror_amount() {
+        let estimate: EnergyEstimate = decode(json!({"amount": 65000}));
+        assert_eq!(estimate.energy, 65000);
+        let estimate: EnergyEstimate = decode(json!({"amount": "65000", "energy": 32000}));
+        assert_eq!((estimate.amount, estimate.energy), (65000, 65000));
+        let calculation: Calculation = decode(json!({"type": "energy", "amount": 65000}));
+        assert_eq!(calculation.energy, 65000);
+        let calculation: Calculation = decode(json!({"type": "energy", "amount": 65000, "energy": 32000}));
+        assert_eq!((calculation.amount, calculation.energy), (65000, 65000));
+        assert_eq!(calculation.service, Service::Energy);
+    }
+
+    #[test]
+    fn deprecated_fields_round_trip() {
+        let rate: EnergyRate = decode(json!({"duration": 1, "min_amount": 65000, "max_amount": 10000000}));
+        let json = serde_json::to_value(&rate).unwrap();
+        assert_eq!(json["min_energy"], 65000);
+        assert_eq!(serde_json::from_value::<EnergyRate>(json).unwrap(), rate);
+        let calculation: Calculation = decode(json!({"type": "bandwidth", "amount": 345, "total": "0.345"}));
+        let json = serde_json::to_value(&calculation).unwrap();
+        assert_eq!(json["type"], "bandwidth");
+        assert_eq!(serde_json::from_value::<Calculation>(json).unwrap(), calculation);
     }
 }
