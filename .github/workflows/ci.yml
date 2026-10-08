@@ -30,7 +30,7 @@ jobs:
           toolchain: 1.94.0
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Format
         run: cargo fmt --check
@@ -64,7 +64,7 @@ jobs:
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Test (default features)
         run: cargo test --locked
@@ -85,7 +85,7 @@ jobs:
         with:
           toolchain: "1.85"
 
-      - uses: Swatinem/rust-cache@63fed3e2fecf6f7b51dc6f043341b79ef82a9ae7 # v2.9.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # Only the library: dev-dependencies such as rcgen need a newer compiler.
       - name: Check
