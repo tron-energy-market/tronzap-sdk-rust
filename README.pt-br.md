@@ -25,7 +25,7 @@ TronZap.com permite [comprar energia TRON](https://tronzap.com/), reduzindo sign
 
 ```toml
 [dependencies]
-tronzap-sdk = "1.0"
+tronzap-sdk = "1.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -148,7 +148,7 @@ substitui.
 | `system-proxy` | não | Respeitar as configurações de proxy do sistema operacional |
 
 ```toml
-tronzap-sdk = { version = "1.0", default-features = false, features = ["native-tls"] }
+tronzap-sdk = { version = "1.1", default-features = false, features = ["native-tls"] }
 ```
 
 ## Métodos disponíveis

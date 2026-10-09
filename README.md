@@ -25,7 +25,7 @@ TronZap.com allows you to [buy TRON energy](https://tronzap.com/), making USDT (
 
 ```toml
 [dependencies]
-tronzap-sdk = "1.0"
+tronzap-sdk = "1.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -147,7 +147,7 @@ effect unless you also call `.timeout(...)`, which replaces it.
 | `system-proxy` | no | Honour the operating system's proxy settings |
 
 ```toml
-tronzap-sdk = { version = "1.0", default-features = false, features = ["native-tls"] }
+tronzap-sdk = { version = "1.1", default-features = false, features = ["native-tls"] }
 ```
 
 ## Available methods

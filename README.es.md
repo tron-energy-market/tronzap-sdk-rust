@@ -25,7 +25,7 @@ TronZap.com permite [comprar energía TRON](https://tronzap.com/), reduciendo si
 
 ```toml
 [dependencies]
-tronzap-sdk = "1.0"
+tronzap-sdk = "1.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -147,7 +147,7 @@ timeout sigue vigente salvo que también llames a `.timeout(...)`, que lo reempl
 | `system-proxy` | no | Respetar la configuración de proxy del sistema operativo |
 
 ```toml
-tronzap-sdk = { version = "1.0", default-features = false, features = ["native-tls"] }
+tronzap-sdk = { version = "1.1", default-features = false, features = ["native-tls"] }
 ```
 
 ## Métodos disponibles

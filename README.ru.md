@@ -25,7 +25,7 @@ TronZap.com позволяет [покупать энергию TRON](https://tr
 
 ```toml
 [dependencies]
-tronzap-sdk = "1.0"
+tronzap-sdk = "1.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -149,7 +149,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 | `system-proxy` | нет | Учитывать системные настройки прокси |
 
 ```toml
-tronzap-sdk = { version = "1.0", default-features = false, features = ["native-tls"] }
+tronzap-sdk = { version = "1.1", default-features = false, features = ["native-tls"] }
 ```
 
 ## Доступные методы

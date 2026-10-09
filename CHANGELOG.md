@@ -6,6 +6,8 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-09
+
 ### Added
 
 - Subscriptions: `TronzapClient::get_subscriptions`, `start_subscription`, `check_subscription`, `stop_subscription`
@@ -51,5 +53,6 @@ First release of the official Rust SDK for the [TronZap API](https://docs.tronza
   HTTP status, API error code, error key, request ID, `Retry-After` delay and raw response body.
 - `rustls` (default), `native-tls` and `system-proxy` features.
 
-[Unreleased]: https://github.com/tron-energy-market/tronzap-sdk-rust/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/tron-energy-market/tronzap-sdk-rust/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/tron-energy-market/tronzap-sdk-rust/releases/tag/v1.1.0
 [1.0.0]: https://github.com/tron-energy-market/tronzap-sdk-rust/releases/tag/v1.0.0
