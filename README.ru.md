@@ -171,6 +171,11 @@ tronzap-sdk = { version = "1.0", default-features = false, features = ["native-t
 | `create_aml_check(&request)` | `/v1/aml-checks/new` | Запустить AML-проверку |
 | `check_aml_status(id)` | `/v1/aml-checks/check` | Статус и результат AML-проверки |
 | `get_aml_history(&request)` | `/v1/aml-checks/history` | История AML-проверок постранично |
+| `get_subscriptions()` | `/v1/subscriptions` | Планы подписок и цены |
+| `start_subscription(&request)` | `/v1/subscription/start` | Подписать адрес на план |
+| `check_subscription(&request)` | `/v1/subscription/check` | Статус подписки по id или внешнему id |
+| `stop_subscription(&request)` | `/v1/subscription/stop` | Остановить подписку |
+| `get_subscription_history(&request)` | `/v1/subscriptions/history` | История подписок постранично |
 | `request(endpoint, &params)` | любой | Подписанный вызов endpoint, который SDK ещё не оборачивает |
 
 Каждый метод `async` и возвращает `Result<T, TronzapError>`. Если отбросить
@@ -181,7 +186,9 @@ future, запрос отменяется.
 `CheckTransactionRequest::by_external_id`), необязательные — методы-сеттеры в
 цепочке. Запрос проверяется до отправки, поэтому невалидный возвращает
 `TronzapError::Validation` и до API не доходит. Значения по умолчанию совпадают с
-API: `duration` — 1 час, история AML начинается со страницы 1 по 10 записей.
+API: `duration` — 1 час, история AML и подписок начинается со
+страницы 1 по 10 записей. Исключение — `StartSubscriptionRequest`: нулевые
+`duration_days` и `transactions_limit` означают отсутствие ограничения.
 
 Результаты — структуры из `tronzap_sdk::responses`. Списки никогда не
 отсутствуют, а значения, которые API может опустить, имеют тип `Option`.
@@ -278,6 +285,47 @@ deposit — для отправителя, для withdrawal — для полу
 `risk_score` равен `None`, пока проверка не завершена. У завершённой проверки
 score может быть 0, и это не то же самое, что отсутствие score.
 
+### Подписки
+
+Подписка обеспечивает адрес энергией для каждой транзакции, пока её не
+остановят или не закончатся её дни или транзакции. Выберите план из
+`get_subscriptions` и передайте его `subscription_id`, например
+`"unlimited_energy"`, а не числовой `id`:
+
+```rust,no_run
+use tronzap_sdk::models::SubscriptionStatus;
+use tronzap_sdk::requests::{StartSubscriptionRequest, SubscriptionHistoryRequest, SubscriptionRequest};
+use tronzap_sdk::TronzapClient;
+
+async fn subscribe(client: &TronzapClient) -> tronzap_sdk::Result<()> {
+    for plan in client.get_subscriptions().await? {
+        println!("{} {} {}", plan.subscription_id, plan.initial_price, plan.price);
+    }
+
+    let request = StartSubscriptionRequest::new("unlimited_energy", "TRecipientAddress")
+        .duration_days(30) // 0 — без ограничения по времени
+        .transactions_limit(0) // 0 — без лимита
+        .external_id("subscription-42");
+    let started = client.start_subscription(&request).await?;
+    println!("{} {}", started.id, started.status);
+
+    let sub = client.check_subscription(&SubscriptionRequest::by_external_id("subscription-42")).await?;
+
+    let stopped = client.stop_subscription(&SubscriptionRequest::by_id(&sub.id)).await?;
+
+    let history = client
+        .get_subscription_history(&SubscriptionHistoryRequest::new().status(SubscriptionStatus::Active))
+        .await?;
+    println!("{} {}", stopped.status, history.total);
+    Ok(())
+}
+```
+
+Запуск, проверка и остановка возвращают подписку с её `params`, а история
+вместо них — счётчики использования `transactions_used`, `energy_used` и
+`total_price`, а `params` равен `None`. Подписку с лимитом транзакций остановить
+нельзя (`ErrorCode::CannotStopSubscription`).
+
 ## Обработка ошибок
 
 Любой сбой — это `TronzapError`. Сопоставляйте варианты, чтобы обработать
@@ -342,11 +390,11 @@ async fn buy(client: &TronzapClient) {
 | 2 | `InvalidServiceOrParams` | Неверный сервис или параметры |
 | 5 | `WalletNotFound` | Внутренний кошелёк не найден. Обратитесь в поддержку. |
 | 6 | `InsufficientFunds` | Недостаточно средств |
-| 10 | `InvalidTronAddress` | Неверный адрес TRON |
+| 10 | `InvalidTronAddress` | Неверный адрес TRON, или у адреса уже есть активная подписка |
 | 11 | `InvalidEnergyAmount` | Неверное количество энергии |
 | 12 | `InvalidDuration` | Неверная длительность |
 | 20 | `TransactionNotFound` | Транзакция/подписка не найдена |
-| 21 | `CannotStopSubscription` | Невозможно остановить подписку |
+| 21 | `CannotStopSubscription` | Невозможно остановить подписку, например, у неё есть лимит транзакций |
 | 24 | `AddressNotActivated` | Адрес не активирован |
 | 25 | `AddressAlreadyActivated` | Адрес уже активирован |
 | 30 | `AmlCheckNotFound` | AML-проверка не найдена |

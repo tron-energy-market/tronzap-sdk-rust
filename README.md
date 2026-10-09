@@ -169,6 +169,11 @@ tronzap-sdk = { version = "1.0", default-features = false, features = ["native-t
 | `create_aml_check(&request)` | `/v1/aml-checks/new` | Start an AML screening |
 | `check_aml_status(id)` | `/v1/aml-checks/check` | Status and result of an AML check |
 | `get_aml_history(&request)` | `/v1/aml-checks/history` | Paginated AML check history |
+| `get_subscriptions()` | `/v1/subscriptions` | Subscription plans and prices |
+| `start_subscription(&request)` | `/v1/subscription/start` | Subscribe an address to a plan |
+| `check_subscription(&request)` | `/v1/subscription/check` | Status of a subscription, by id or external id |
+| `stop_subscription(&request)` | `/v1/subscription/stop` | Stop a subscription |
+| `get_subscription_history(&request)` | `/v1/subscriptions/history` | Paginated subscription history |
 | `request(endpoint, &params)` | any | Signed call to an endpoint the SDK does not wrap yet |
 
 Every method is `async` and returns `Result<T, TronzapError>`. Dropping the future
@@ -179,7 +184,9 @@ arguments of `new` (or of a named constructor such as
 `CheckTransactionRequest::by_external_id`), optional ones are chainable setters.
 A request is validated before it is sent, so an invalid one returns
 `TronzapError::Validation` and never reaches the API. Defaults match the API:
-`duration` is 1 hour, and AML history starts at page 1 with 10 items.
+`duration` is 1 hour, and AML and subscription history start at page 1 with 10 items. The exception
+is `StartSubscriptionRequest`, where a zero `duration_days` or
+`transactions_limit` means no limit.
 
 Results are structs in `tronzap_sdk::responses`. Lists are never missing, and
 values the API may omit are `Option`s.
@@ -277,6 +284,47 @@ withdrawal.
 `risk_score` is `None` until screening finishes. A completed check can have a score
 of 0, which is not the same as having no score yet.
 
+### Subscriptions
+
+A subscription keeps an address supplied with energy for every transaction until
+it is stopped or runs out of days or transactions. Pick a plan from
+`get_subscriptions` and pass its `subscription_id`, such as `"unlimited_energy"`,
+not its numeric `id`:
+
+```rust,no_run
+use tronzap_sdk::models::SubscriptionStatus;
+use tronzap_sdk::requests::{StartSubscriptionRequest, SubscriptionHistoryRequest, SubscriptionRequest};
+use tronzap_sdk::TronzapClient;
+
+async fn subscribe(client: &TronzapClient) -> tronzap_sdk::Result<()> {
+    for plan in client.get_subscriptions().await? {
+        println!("{} {} {}", plan.subscription_id, plan.initial_price, plan.price);
+    }
+
+    let request = StartSubscriptionRequest::new("unlimited_energy", "TRecipientAddress")
+        .duration_days(30) // 0 for no time limit
+        .transactions_limit(0) // 0 for no limit
+        .external_id("subscription-42");
+    let started = client.start_subscription(&request).await?;
+    println!("{} {}", started.id, started.status);
+
+    let sub = client.check_subscription(&SubscriptionRequest::by_external_id("subscription-42")).await?;
+
+    let stopped = client.stop_subscription(&SubscriptionRequest::by_id(&sub.id)).await?;
+
+    let history = client
+        .get_subscription_history(&SubscriptionHistoryRequest::new().status(SubscriptionStatus::Active))
+        .await?;
+    println!("{} {}", stopped.status, history.total);
+    Ok(())
+}
+```
+
+Start, check and stop return the subscription with its `params`; the history
+returns the usage counters `transactions_used`, `energy_used` and `total_price`
+instead, with `params` set to `None`. A subscription with a transactions limit
+cannot be stopped (`ErrorCode::CannotStopSubscription`).
+
 ## Error handling
 
 Every failure is a `TronzapError`. Match on its variants to handle one kind of
@@ -341,11 +389,11 @@ a non-zero code is always reported with that code, never as a bare HTTP error.
 | 2 | `InvalidServiceOrParams` | Invalid service or parameters |
 | 5 | `WalletNotFound` | Internal wallet not found. Contact support. |
 | 6 | `InsufficientFunds` | Insufficient funds |
-| 10 | `InvalidTronAddress` | Invalid TRON address |
+| 10 | `InvalidTronAddress` | Invalid TRON address, or the address already has an active subscription |
 | 11 | `InvalidEnergyAmount` | Invalid energy amount |
 | 12 | `InvalidDuration` | Invalid duration |
 | 20 | `TransactionNotFound` | Transaction/subscription not found |
-| 21 | `CannotStopSubscription` | Cannot stop subscription |
+| 21 | `CannotStopSubscription` | Cannot stop subscription, e.g. it has a transactions limit |
 | 24 | `AddressNotActivated` | Address not activated |
 | 25 | `AddressAlreadyActivated` | Address already activated |
 | 30 | `AmlCheckNotFound` | AML check not found |

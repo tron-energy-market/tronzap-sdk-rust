@@ -7,11 +7,14 @@
 mod de;
 
 use std::collections::BTreeMap;
+use std::fmt;
 
+use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 
 use crate::models::{
-    AmlCheckType, AmlDirection, AmlRiskLevel, AmlStatus, Decimal, Service, Timestamp, TransactionStatus,
+    AmlCheckType, AmlDirection, AmlRiskLevel, AmlStatus, Decimal, Service, SubscriptionStatus, Timestamp,
+    TransactionStatus,
 };
 
 /// The resources on sale and their prices.
@@ -548,6 +551,170 @@ pub struct AmlHistory {
     pub items: Vec<AmlCheck>,
 }
 
+/// A subscription plan on sale.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SubscriptionPlan {
+    /// The plan key, such as `unlimited_energy`. Pass it to
+    /// [`StartSubscriptionRequest::new`](crate::requests::StartSubscriptionRequest::new).
+    #[serde(default, deserialize_with = "de::string")]
+    pub subscription_id: String,
+    /// The plan's numeric identifier.
+    #[serde(default, deserialize_with = "de::u64")]
+    pub id: u64,
+    /// The human-readable plan name.
+    #[serde(default, deserialize_with = "de::string")]
+    pub name: String,
+    /// The one-time fee charged when a subscription starts.
+    #[serde(default, with = "de::decimal")]
+    pub activation_fee: Decimal,
+    /// The amount charged when a subscription starts.
+    #[serde(default, with = "de::decimal")]
+    pub initial_price: Decimal,
+    /// The cost of each transaction a subscription serves.
+    #[serde(default, with = "de::decimal")]
+    pub price: Decimal,
+    /// How many transactions the plan covers, 0 for no limit.
+    #[serde(default, deserialize_with = "de::u64")]
+    pub transactions_limit: u64,
+    /// How many days the plan runs, 0 for no time limit.
+    #[serde(default, deserialize_with = "de::u32")]
+    pub duration_days: u32,
+}
+
+/// The plans object, keyed by plan, decoded into a list in the API's order.
+pub(crate) struct SubscriptionPlans(pub(crate) Vec<SubscriptionPlan>);
+
+impl<'de> Deserialize<'de> for SubscriptionPlans {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Plans;
+
+        impl<'de> Visitor<'de> for Plans {
+            type Value = SubscriptionPlans;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an object of subscription plans")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut plans = Vec::with_capacity(map.size_hint().unwrap_or(0));
+                while let Some((key, mut plan)) = map.next_entry::<String, SubscriptionPlan>()? {
+                    plan.subscription_id = key;
+                    plans.push(plan);
+                }
+                Ok(SubscriptionPlans(plans))
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut plans = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(plan) = seq.next_element()? {
+                    plans.push(plan);
+                }
+                Ok(SubscriptionPlans(plans))
+            }
+        }
+
+        deserializer.deserialize_any(Plans)
+    }
+}
+
+/// An energy subscription for an address.
+///
+/// [`start_subscription`](crate::TronzapClient::start_subscription),
+/// [`check_subscription`](crate::TronzapClient::check_subscription) and
+/// [`stop_subscription`](crate::TronzapClient::stop_subscription) report the
+/// identifiers, status, dates and [`params`](Self::params).
+/// [`get_subscription_history`](crate::TronzapClient::get_subscription_history)
+/// reports the usage counters and `total_price` instead of `params`. Counters and
+/// prices a response does not carry are 0.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct Subscription {
+    /// The identifier TronZap assigned.
+    #[serde(default, deserialize_with = "de::string")]
+    pub id: String,
+    /// The plan key, such as `unlimited_energy`.
+    #[serde(default, deserialize_with = "de::string")]
+    pub subscription_id: String,
+    /// The external identifier you set, if any.
+    #[serde(default, deserialize_with = "de::opt_string")]
+    pub external_id: Option<String>,
+    /// The address the subscription serves. A stopped subscription is reported
+    /// without it; read [`SubscriptionParams::address`] instead.
+    #[serde(default, deserialize_with = "de::opt_string")]
+    pub address: Option<String>,
+    /// The current state.
+    #[serde(default = "de::unknown", deserialize_with = "de::wire_enum")]
+    pub status: SubscriptionStatus,
+    /// The parameters the subscription was started with. `None` in the history.
+    #[serde(default, deserialize_with = "de::opt_object")]
+    pub params: Option<SubscriptionParams>,
+    /// How many transactions the subscription covers, 0 for no limit.
+    #[serde(default, deserialize_with = "de::u64")]
+    pub transactions_limit: u64,
+    /// How many transactions the subscription has served.
+    #[serde(default, deserialize_with = "de::u64")]
+    pub transactions_used: u64,
+    /// How much energy the subscription has delegated.
+    #[serde(default, deserialize_with = "de::u64")]
+    pub energy_used: u64,
+    /// The amount charged for the subscription so far.
+    #[serde(default, with = "de::decimal")]
+    pub total_price: Decimal,
+    /// When the subscription was created.
+    #[serde(default, deserialize_with = "de::opt_timestamp")]
+    pub created_at: Option<Timestamp>,
+    /// When the subscription started.
+    #[serde(default, deserialize_with = "de::opt_timestamp")]
+    pub started_at: Option<Timestamp>,
+    /// When the subscription was last renewed.
+    #[serde(default, deserialize_with = "de::opt_timestamp")]
+    pub renewed_at: Option<Timestamp>,
+    /// When the subscription was stopped.
+    #[serde(default, deserialize_with = "de::opt_timestamp")]
+    pub stopped_at: Option<Timestamp>,
+    /// When the subscription ends. `None` without a time limit, and for a
+    /// stopped subscription.
+    #[serde(default, deserialize_with = "de::opt_timestamp")]
+    pub expire_at: Option<Timestamp>,
+}
+
+/// The parameters a subscription was started with.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SubscriptionParams {
+    /// The address the subscription serves.
+    #[serde(default, deserialize_with = "de::string")]
+    pub address: String,
+    /// How many days the subscription runs, 0 for no time limit.
+    #[serde(rename = "duration", default, deserialize_with = "de::u32")]
+    pub duration_days: u32,
+    /// How many transactions the subscription covers, 0 for no limit.
+    #[serde(default, deserialize_with = "de::u64")]
+    pub transactions_limit: u64,
+    /// Whether address activation was requested.
+    #[serde(default, deserialize_with = "de::bool")]
+    pub activate_address: bool,
+}
+
+/// One page of subscription history.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct SubscriptionHistory {
+    /// The page number, starting at 1.
+    #[serde(default, deserialize_with = "de::u32")]
+    pub page: u32,
+    /// The page size.
+    #[serde(default, deserialize_with = "de::u32")]
+    pub per_page: u32,
+    /// The number of matching subscriptions across all pages.
+    #[serde(default, deserialize_with = "de::u64")]
+    pub total: u64,
+    /// The subscriptions on this page, newest first.
+    #[serde(default, deserialize_with = "de::list")]
+    pub items: Vec<Subscription>,
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
@@ -684,6 +851,34 @@ mod tests {
         let calculation: Calculation = decode(json!({"type": "energy", "amount": 65000, "energy": 32000}));
         assert_eq!((calculation.amount, calculation.energy), (65000, 65000));
         assert_eq!(calculation.service, Service::Energy);
+    }
+
+    #[test]
+    fn subscription_plans_keep_order_and_key() {
+        let plans: SubscriptionPlans =
+            serde_json::from_str(r#"{"b_plan":{"id":"2","price":"5"},"a_plan":{"id":1,"price":2.8}}"#)
+                .unwrap();
+        let keys: Vec<&str> = plans.0.iter().map(|p| p.subscription_id.as_str()).collect();
+        assert_eq!(keys, ["b_plan", "a_plan"]);
+        assert_eq!((plans.0[0].id, plans.0[1].price.to_string()), (2, "2.8".to_owned()));
+        assert!(serde_json::from_str::<SubscriptionPlans>("[]").unwrap().0.is_empty());
+        assert!(serde_json::from_str::<SubscriptionPlans>("true").is_err());
+    }
+
+    #[test]
+    fn subscription_round_trips() {
+        let sub: Subscription = decode(json!({
+            "id": "sub-1", "status": "active", "total_price": 13.6, "params": [],
+            "created_at": "2026-10-08T15:26:32+00:00", "stopped_at": null
+        }));
+        assert_eq!(sub.params, None);
+        assert_eq!(sub.status, SubscriptionStatus::Active);
+        let json = serde_json::to_value(&sub).unwrap();
+        assert_eq!(json["total_price"], "13.6");
+        assert_eq!(serde_json::from_value::<Subscription>(json).unwrap(), sub);
+        let params: SubscriptionParams = decode(json!({"duration": "30", "activate_address": 1}));
+        assert_eq!((params.duration_days, params.activate_address), (30, true));
+        assert_eq!(serde_json::to_value(&params).unwrap()["duration"], 30);
     }
 
     #[test]

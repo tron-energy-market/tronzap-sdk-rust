@@ -9,6 +9,7 @@
 //! export TRONZAP_TO_ADDRESS=TRON_ADDRESS       # optional, with FROM_ADDRESS
 //! export TRONZAP_TRANSACTION_ID=id             # optional
 //! export TRONZAP_AML_CHECK_ID=id               # optional
+//! export TRONZAP_SUBSCRIPTION_ID=id            # optional
 //! cargo run --example basic_usage
 //! ```
 //!
@@ -16,6 +17,10 @@
 //! transactions and AML checks. Those DEBIT THE ACCOUNT BALANCE. It is meant for
 //! verifying an integration against a development environment, and it also needs
 //! `TRONZAP_ADDRESS`.
+//!
+//! Setting `TRONZAP_SUBSCRIPTION_PLAN` (a plan key such as `unlimited_energy`) as
+//! well starts a one-day subscription to that plan for `TRONZAP_ADDRESS` and stops
+//! it straight away. Starting one CHARGES THE PLAN'S INITIAL PRICE.
 
 use std::process::ExitCode;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -24,9 +29,10 @@ use tronzap_sdk::models::Timestamp;
 use tronzap_sdk::requests::{
     AddressActivationRequest, AmlCheckRequest, AmlHistoryRequest, BandwidthTransactionRequest,
     CalculateRequest, CheckTransactionRequest, EnergyTransactionRequest, EstimateEnergyRequest,
-    ResourceBundleTransactionRequest,
+    ResourceBundleTransactionRequest, StartSubscriptionRequest, SubscriptionHistoryRequest,
+    SubscriptionRequest,
 };
-use tronzap_sdk::responses::Transaction;
+use tronzap_sdk::responses::{Subscription, Transaction};
 use tronzap_sdk::{ErrorCode, TronzapClient, TronzapError};
 
 const ENERGY: u64 = 65000;
@@ -90,6 +96,37 @@ async fn main() -> ExitCode {
         println!("  page {}, {} of {} check(s)", h.page, h.items.len(), h.total);
     });
 
+    run.step("get_subscriptions", client.get_subscriptions().await, |plans| {
+        for plan in plans {
+            println!(
+                "  {} ({}): activation {}, initial {}, {} per transaction, limit {} transactions, {} days",
+                plan.subscription_id,
+                plan.name,
+                plan.activation_fee,
+                plan.initial_price,
+                plan.price,
+                plan.transactions_limit,
+                plan.duration_days
+            );
+        }
+    });
+    let request = SubscriptionHistoryRequest::new().per_page(3);
+    run.step("get_subscription_history", client.get_subscription_history(&request).await, |h| {
+        println!("  page {}, {} of {} subscription(s)", h.page, h.items.len(), h.total);
+        for sub in &h.items {
+            println!(
+                "  {} {} {}, {} transaction(s), {} energy, charged {}, expires {}",
+                sub.id,
+                sub.subscription_id,
+                sub.status,
+                sub.transactions_used,
+                sub.energy_used,
+                sub.total_price,
+                describe(sub.expire_at.as_ref())
+            );
+        }
+    });
+
     let address = env("TRONZAP_ADDRESS");
     match &address {
         Some(address) => {
@@ -137,6 +174,14 @@ async fn main() -> ExitCode {
             println!("  {}, risk {risk}", c.status);
         }),
         None => Run::skip("check_aml_status"),
+    }
+
+    match env("TRONZAP_SUBSCRIPTION_ID") {
+        Some(id) => {
+            let request = SubscriptionRequest::by_id(id);
+            run.step("check_subscription", client.check_subscription(&request).await, print_subscription);
+        }
+        None => Run::skip("check_subscription"),
     }
 
     if env("TRONZAP_ALLOW_PURCHASES").as_deref() != Some("1") {
@@ -188,6 +233,33 @@ async fn main() -> ExitCode {
         run.step("create_aml_check", client.create_aml_check(&request).await, |c| {
             println!("  AML check {} is {}", c.id, c.status);
         });
+
+        match env("TRONZAP_SUBSCRIPTION_PLAN") {
+            Some(plan) => {
+                let request = StartSubscriptionRequest::new(plan, address.as_str())
+                    .duration_days(1)
+                    .external_id(format!("{run_id}-subscription"));
+                let mut started = None;
+                run.step("start_subscription", client.start_subscription(&request).await, |sub| {
+                    started = Some(sub.id.clone());
+                    print_subscription(sub);
+                });
+                if let Some(id) = started {
+                    let request = SubscriptionRequest::by_id(id);
+                    run.step(
+                        "check_subscription",
+                        client.check_subscription(&request).await,
+                        print_subscription,
+                    );
+                    run.step(
+                        "stop_subscription",
+                        client.stop_subscription(&request).await,
+                        print_subscription,
+                    );
+                }
+            }
+            None => Run::skip("start_subscription"),
+        }
     } else {
         println!("\nSkipping purchases: TRONZAP_ADDRESS is not set");
     }
@@ -231,6 +303,19 @@ fn print_transaction(tx: Transaction) {
         tx.status,
         tx.amount,
         describe(tx.created_at.as_ref())
+    );
+}
+
+fn print_subscription(sub: Subscription) {
+    println!(
+        "  {} {} {}, address {}, created {}, expires {}, stopped {}",
+        sub.id,
+        sub.subscription_id,
+        sub.status,
+        sub.address.as_deref().unwrap_or("not reported"),
+        describe(sub.created_at.as_ref()),
+        describe(sub.expire_at.as_ref()),
+        describe(sub.stopped_at.as_ref())
     );
 }
 

@@ -6,6 +6,19 @@ All notable changes to this project are documented in this file. The format is b
 
 ## [Unreleased]
 
+### Added
+
+- Subscriptions: `TronzapClient::get_subscriptions`, `start_subscription`, `check_subscription`, `stop_subscription`
+  and `get_subscription_history`, with the requests `StartSubscriptionRequest`, `SubscriptionRequest` and
+  `SubscriptionHistoryRequest`, the responses `SubscriptionPlan`, `Subscription`, `SubscriptionParams` and
+  `SubscriptionHistory`, and the `SubscriptionStatus` enum. `get_subscriptions` returns the plans in the order the
+  API lists them.
+
+### Changed
+
+- The descriptions of error codes 10 (`InvalidTronAddress`), which also means the address already has an active
+  subscription, and 21 (`CannotStopSubscription`), which is returned for a subscription with a transactions limit.
+
 ### Deprecated
 
 - `EnergyRate::min_energy` and `EnergyRate::max_energy`: use `min_amount` and `max_amount`.

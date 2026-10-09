@@ -169,6 +169,11 @@ tronzap-sdk = { version = "1.0", default-features = false, features = ["native-t
 | `create_aml_check(&request)` | `/v1/aml-checks/new` | Iniciar una verificación AML |
 | `check_aml_status(id)` | `/v1/aml-checks/check` | Estado y resultado de una verificación AML |
 | `get_aml_history(&request)` | `/v1/aml-checks/history` | Historial paginado de verificaciones AML |
+| `get_subscriptions()` | `/v1/subscriptions` | Planes de suscripción y precios |
+| `start_subscription(&request)` | `/v1/subscription/start` | Suscribir una dirección a un plan |
+| `check_subscription(&request)` | `/v1/subscription/check` | Estado de una suscripción, por id o id externo |
+| `stop_subscription(&request)` | `/v1/subscription/stop` | Detener una suscripción |
+| `get_subscription_history(&request)` | `/v1/subscriptions/history` | Historial paginado de suscripciones |
 | `request(endpoint, &params)` | cualquiera | Llamada firmada a un endpoint que el SDK aún no cubre |
 
 Cada método es `async` y devuelve `Result<T, TronzapError>`. Descartar el future
@@ -179,8 +184,10 @@ valores obligatorios son argumentos de `new` (o de un constructor con nombre, co
 `CheckTransactionRequest::by_external_id`) y los opcionales son setters
 encadenables. La solicitud se valida antes de enviarse, así que una inválida
 devuelve `TronzapError::Validation` y nunca llega a la API. Los valores por
-defecto coinciden con la API: `duration` es 1 hora y el historial AML empieza en
-la página 1 con 10 elementos.
+defecto coinciden con la API: `duration` es 1 hora y los historiales AML y
+de suscripciones empiezan en la página 1 con 10 elementos. La excepción es
+`StartSubscriptionRequest`, donde un `duration_days` o `transactions_limit` igual
+a cero significa sin límite.
 
 Los resultados son structs de `tronzap_sdk::responses`. Las listas nunca faltan, y
 los valores que la API puede omitir son `Option`.
@@ -280,6 +287,47 @@ un deposit, el destinatario en un withdrawal.
 completada puede tener un score de 0, que no es lo mismo que no tener score
 todavía.
 
+### Suscripciones
+
+Una suscripción mantiene una dirección abastecida de energía para cada transacción
+hasta que se detiene o se agotan sus días o transacciones. Elija un plan de
+`get_subscriptions` y pase su `subscription_id`, como `"unlimited_energy"`, no su
+`id` numérico:
+
+```rust,no_run
+use tronzap_sdk::models::SubscriptionStatus;
+use tronzap_sdk::requests::{StartSubscriptionRequest, SubscriptionHistoryRequest, SubscriptionRequest};
+use tronzap_sdk::TronzapClient;
+
+async fn subscribe(client: &TronzapClient) -> tronzap_sdk::Result<()> {
+    for plan in client.get_subscriptions().await? {
+        println!("{} {} {}", plan.subscription_id, plan.initial_price, plan.price);
+    }
+
+    let request = StartSubscriptionRequest::new("unlimited_energy", "TRecipientAddress")
+        .duration_days(30) // 0 para sin límite de tiempo
+        .transactions_limit(0) // 0 para sin límite
+        .external_id("subscription-42");
+    let started = client.start_subscription(&request).await?;
+    println!("{} {}", started.id, started.status);
+
+    let sub = client.check_subscription(&SubscriptionRequest::by_external_id("subscription-42")).await?;
+
+    let stopped = client.stop_subscription(&SubscriptionRequest::by_id(&sub.id)).await?;
+
+    let history = client
+        .get_subscription_history(&SubscriptionHistoryRequest::new().status(SubscriptionStatus::Active))
+        .await?;
+    println!("{} {}", stopped.status, history.total);
+    Ok(())
+}
+```
+
+Iniciar, consultar y detener devuelven la suscripción con sus `params`; el
+historial devuelve en su lugar los contadores de uso `transactions_used`,
+`energy_used` y `total_price`, con `params` en `None`. Una suscripción con límite
+de transacciones no se puede detener (`ErrorCode::CannotStopSubscription`).
+
 ## Gestión de errores
 
 Toda falla es un `TronzapError`. Haz match sobre sus variantes para tratar un
@@ -346,11 +394,11 @@ error HTTP.
 | 2 | `InvalidServiceOrParams` | Servicio o parámetros inválidos |
 | 5 | `WalletNotFound` | Billetera interna no encontrada. Contacta con soporte. |
 | 6 | `InsufficientFunds` | Fondos insuficientes |
-| 10 | `InvalidTronAddress` | Dirección TRON inválida |
+| 10 | `InvalidTronAddress` | Dirección TRON inválida, o la dirección ya tiene una suscripción activa |
 | 11 | `InvalidEnergyAmount` | Cantidad de energía inválida |
 | 12 | `InvalidDuration` | Duración inválida |
 | 20 | `TransactionNotFound` | Transacción/suscripción no encontrada |
-| 21 | `CannotStopSubscription` | No se puede detener la suscripción |
+| 21 | `CannotStopSubscription` | No se puede detener la suscripción, p. ej. tiene límite de transacciones |
 | 24 | `AddressNotActivated` | Dirección no activada |
 | 25 | `AddressAlreadyActivated` | Dirección ya activada |
 | 30 | `AmlCheckNotFound` | Verificación AML no encontrada |

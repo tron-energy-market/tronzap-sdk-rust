@@ -103,6 +103,24 @@ wire_enum! {
 }
 
 wire_enum! {
+    /// The state of a subscription.
+    SubscriptionStatus {
+        /// Created, not started yet.
+        New => "new",
+        /// Being started.
+        Pending => "pending",
+        /// Could not be started.
+        Error => "error",
+        /// Delegating energy.
+        Active => "active",
+        /// Stopped.
+        Stopped => "stopped",
+        /// Ran out of time or transactions.
+        Expired => "expired",
+    }
+}
+
+wire_enum! {
     /// What an AML check screens.
     AmlCheckType {
         /// A wallet address.
@@ -176,5 +194,7 @@ mod tests {
         assert_eq!(AmlRiskLevel::from(String::from("high")), AmlRiskLevel::High);
         assert_eq!(AmlStatus::Completed.to_string(), "completed");
         assert_eq!(AmlCheckType::from("hash"), AmlCheckType::Hash);
+        assert_eq!(SubscriptionStatus::from("expired"), SubscriptionStatus::Expired);
+        assert_eq!(SubscriptionStatus::from("paused"), SubscriptionStatus::Unknown("paused".into()));
     }
 }

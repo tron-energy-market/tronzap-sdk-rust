@@ -17,11 +17,12 @@ use crate::error::{
 use crate::requests::{
     AddressActivationRequest, AddressParam, AmlCheckRequest, AmlHistoryRequest, BandwidthTransactionRequest,
     CalculateRequest, CheckTransactionRequest, EnergyTransactionRequest, EstimateEnergyRequest, IdParam,
-    ResourceBundleTransactionRequest, required,
+    ResourceBundleTransactionRequest, StartSubscriptionRequest, SubscriptionHistoryRequest,
+    SubscriptionRequest, required,
 };
 use crate::responses::{
     AddressInfo, AmlCheck, AmlHistory, AmlService, Balance, Calculation, DirectRechargeInfo, EnergyEstimate,
-    Services, Transaction,
+    Services, Subscription, SubscriptionHistory, SubscriptionPlan, SubscriptionPlans, Transaction,
 };
 
 const MAX_RESPONSE_BYTES: usize = 8 << 20;
@@ -257,6 +258,73 @@ impl TronzapClient {
         self.request("/v1/aml-checks/history", &request.wire()).await
     }
 
+    /// Returns the subscription plans on sale, in the order the API lists them.
+    ///
+    /// # Errors
+    ///
+    /// See [`TronzapError`].
+    pub async fn get_subscriptions(&self) -> Result<Vec<SubscriptionPlan>> {
+        let response = self.send("/v1/subscriptions", &Empty {}).await?;
+        let plans: SubscriptionPlans =
+            decode_in_order(response.status, response.retry_after, &response.body)?;
+        Ok(plans.0)
+    }
+
+    /// Subscribes an address to a plan from
+    /// [`get_subscriptions`](Self::get_subscriptions). This debits the account
+    /// balance by the plan's initial price.
+    ///
+    /// An address that already has an active subscription fails with
+    /// [`ErrorCode::InvalidTronAddress`](crate::ErrorCode::InvalidTronAddress).
+    ///
+    /// # Errors
+    ///
+    /// [`TronzapError::Validation`] for an invalid request; otherwise see
+    /// [`TronzapError`].
+    pub async fn start_subscription(&self, request: &StartSubscriptionRequest) -> Result<Subscription> {
+        validate(request.validate())?;
+        self.request("/v1/subscription/start", &request.wire()).await
+    }
+
+    /// Returns the current state of a subscription.
+    ///
+    /// # Errors
+    ///
+    /// [`TronzapError::Validation`] for an invalid request; otherwise see
+    /// [`TronzapError`].
+    pub async fn check_subscription(&self, request: &SubscriptionRequest) -> Result<Subscription> {
+        validate(request.validate())?;
+        self.request("/v1/subscription/check", &request.wire()).await
+    }
+
+    /// Stops a subscription.
+    ///
+    /// A subscription with a transactions limit cannot be stopped and fails with
+    /// [`ErrorCode::CannotStopSubscription`](crate::ErrorCode::CannotStopSubscription).
+    ///
+    /// # Errors
+    ///
+    /// [`TronzapError::Validation`] for an invalid request; otherwise see
+    /// [`TronzapError`].
+    pub async fn stop_subscription(&self, request: &SubscriptionRequest) -> Result<Subscription> {
+        validate(request.validate())?;
+        self.request("/v1/subscription/stop", &request.wire()).await
+    }
+
+    /// Returns one page of your subscriptions, newest first.
+    ///
+    /// # Errors
+    ///
+    /// [`TronzapError::Validation`] for an invalid request; otherwise see
+    /// [`TronzapError`].
+    pub async fn get_subscription_history(
+        &self,
+        request: &SubscriptionHistoryRequest,
+    ) -> Result<SubscriptionHistory> {
+        validate(request.validate())?;
+        self.request("/v1/subscriptions/history", &request.wire()).await
+    }
+
     /// Sends a signed request to any endpoint and decodes its `result`.
     ///
     /// Use it for endpoints this SDK does not wrap yet, and prefer the typed
@@ -279,6 +347,11 @@ impl TronzapClient {
         P: Serialize + ?Sized,
         R: DeserializeOwned,
     {
+        let response = self.send(endpoint, params).await?;
+        decode(response.status, response.retry_after, &response.body)
+    }
+
+    async fn send<P: Serialize + ?Sized>(&self, endpoint: &str, params: &P) -> Result<RawResponse> {
         let endpoint = endpoint.trim();
         required("endpoint", endpoint).map_err(TronzapError::Validation)?;
         let body = serde_json::to_vec(params)
@@ -306,7 +379,7 @@ impl TronzapClient {
         let status = response.status().as_u16();
         let retry_after = retry_after(response.headers());
         let body = read_body(response).await?;
-        decode(status, retry_after, &body)
+        Ok(RawResponse { status, retry_after, body })
     }
 }
 
@@ -326,6 +399,12 @@ const TRANSACTION_NEW: &str = "/v1/transaction/new";
 
 #[derive(Serialize)]
 struct Empty {}
+
+struct RawResponse {
+    status: u16,
+    retry_after: Option<Duration>,
+    body: Vec<u8>,
+}
 
 fn validate(result: std::result::Result<(), ValidationError>) -> Result<()> {
     result.map_err(TronzapError::Validation)
@@ -377,6 +456,35 @@ async fn read_body(mut response: reqwest::Response) -> Result<Vec<u8>> {
 // The API reports some failures with a 2xx status and others with 4xx/5xx, so a
 // non-zero `code` is checked before the HTTP status.
 fn decode<R: DeserializeOwned>(status: u16, retry_after: Option<Duration>, body: &[u8]) -> Result<R> {
+    let result = envelope(status, retry_after, body)?;
+    R::deserialize(result).map_err(|e| unexpected_result(status, body, e))
+}
+
+// serde_json::Value sorts object keys, so a result whose key order matters is
+// decoded again from the raw body.
+fn decode_in_order<R: DeserializeOwned>(
+    status: u16,
+    retry_after: Option<Duration>,
+    body: &[u8],
+) -> Result<R> {
+    #[derive(serde::Deserialize)]
+    struct Body<R> {
+        result: R,
+    }
+    envelope(status, retry_after, body)?;
+    serde_json::from_slice::<Body<R>>(body).map(|b| b.result).map_err(|e| unexpected_result(status, body, e))
+}
+
+fn unexpected_result(status: u16, body: &[u8], error: serde_json::Error) -> TronzapError {
+    TronzapError::Serialization(SerializationError::response(
+        "unexpected result in response",
+        status,
+        String::from_utf8_lossy(body).into_owned(),
+        Some(error),
+    ))
+}
+
+fn envelope(status: u16, retry_after: Option<Duration>, body: &[u8]) -> Result<Value> {
     let success = (200..300).contains(&status);
     let text = || String::from_utf8_lossy(body).into_owned();
 
@@ -435,14 +543,7 @@ fn decode<R: DeserializeOwned>(status: u16, retry_after: Option<Duration>, body:
             text(),
             None,
         ))),
-        Some(result) => R::deserialize(result).map_err(|e| {
-            TronzapError::Serialization(SerializationError::response(
-                "unexpected result in response",
-                status,
-                text(),
-                Some(e),
-            ))
-        }),
+        Some(result) => Ok(result),
     }
 }
 

@@ -12,7 +12,8 @@ use tokio::net::TcpListener;
 use tronzap_sdk::models::AmlDirection;
 use tronzap_sdk::requests::{
     AmlCheckRequest, AmlHistoryRequest, BandwidthTransactionRequest, CalculateRequest,
-    CheckTransactionRequest, EnergyTransactionRequest, EstimateEnergyRequest,
+    CheckTransactionRequest, EnergyTransactionRequest, EstimateEnergyRequest, StartSubscriptionRequest,
+    SubscriptionHistoryRequest, SubscriptionRequest,
 };
 use tronzap_sdk::{ErrorCode, TransportErrorKind, TronzapClient, TronzapError};
 use wiremock::{MockServer, ResponseTemplate};
@@ -364,6 +365,17 @@ async fn invalid_requests_are_never_sent() {
             .err(),
         client.get_aml_history(&AmlHistoryRequest::new().per_page(0)).await.err(),
         client.request::<_, serde_json::Value>("  ", &json!({})).await.err(),
+        client.start_subscription(&StartSubscriptionRequest::new("", "TAddress")).await.err(),
+        client.start_subscription(&StartSubscriptionRequest::new("unlimited_energy", " ")).await.err(),
+        client
+            .start_subscription(
+                &StartSubscriptionRequest::new("unlimited_energy", "TAddress").external_id(""),
+            )
+            .await
+            .err(),
+        client.check_subscription(&SubscriptionRequest::by_id("")).await.err(),
+        client.stop_subscription(&SubscriptionRequest::by_external_id(" ")).await.err(),
+        client.get_subscription_history(&SubscriptionHistoryRequest::new().page(0)).await.err(),
     ];
     for failure in failures {
         assert!(matches!(failure, Some(TronzapError::Validation(_))), "{failure:?}");

@@ -5,13 +5,17 @@ mod common;
 
 use common::{client, ok, only_request, respond};
 use serde_json::json;
-use tronzap_sdk::models::{AmlCheckType, AmlDirection, AmlRiskLevel, AmlStatus, Service, TransactionStatus};
+use tronzap_sdk::TronzapError;
+use tronzap_sdk::models::{
+    AmlCheckType, AmlDirection, AmlRiskLevel, AmlStatus, Service, SubscriptionStatus, TransactionStatus,
+};
 use tronzap_sdk::requests::{
     AddressActivationRequest, AmlCheckRequest, AmlHistoryRequest, BandwidthTransactionRequest,
     CalculateRequest, CheckTransactionRequest, EnergyTransactionRequest, EstimateEnergyRequest,
-    ResourceBundleTransactionRequest, USDT_CONTRACT_ADDRESS,
+    ResourceBundleTransactionRequest, StartSubscriptionRequest, SubscriptionHistoryRequest,
+    SubscriptionRequest, USDT_CONTRACT_ADDRESS,
 };
-use wiremock::MockServer;
+use wiremock::{MockServer, ResponseTemplate};
 
 const ADDRESS: &str = "TQrY8tryqsYVCYS3MFbtffiPp2ccyn4STm";
 
@@ -376,6 +380,232 @@ async fn get_aml_history_filtered() {
     let history = client(&server).get_aml_history(&request).await.unwrap();
     assert_eq!(only_request(&server).await, json!({"page": 2, "per_page": 50, "status": "completed"}));
     assert_eq!(history.items[0].id, "aml-51");
+}
+
+// A raw body: json! would sort the plan keys.
+fn raw_ok(result: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_raw(format!(r#"{{"code":0,"result":{result}}}"#), "application/json")
+}
+
+fn subscription(status: &str) -> serde_json::Value {
+    json!({
+        "id": "01m4e1z3q0r7x225zc6p63m5ey",
+        "subscription_id": "unlimited_energy",
+        "created_at": "2026-10-08T15:26:32+00:00",
+        "expire_at": "2026-11-07T15:26:32+00:00",
+        "address": "TAddress",
+        "status": status,
+        "external_id": "sub-1",
+        "params": {"address": "TAddress", "duration": 30, "transactions_limit": 0, "activate_address": false}
+    })
+}
+
+#[tokio::test]
+async fn get_subscriptions_keeps_the_api_order() {
+    let server = MockServer::start().await;
+    respond(
+        &server,
+        "/v1/subscriptions",
+        raw_ok(
+            r#"{"unlimited_energy":{"id":8,"name":"Unlimited Energy","activation_fee":0,"initial_price":8,"price":2.8,"transactions_limit":0,"duration_days":0},
+                "energy_pack_100":{"id":2,"name":"Energy Pack 100","activation_fee":"2.0","initial_price":10,"price":5,"transactions_limit":10,"duration_days":5}}"#,
+        ),
+    )
+    .await;
+
+    let plans = client(&server).get_subscriptions().await.unwrap();
+    assert_eq!(only_request(&server).await, json!({}));
+    assert_eq!(plans.len(), 2);
+    let first = &plans[0];
+    assert_eq!(
+        (first.subscription_id.as_str(), first.id, first.name.as_str()),
+        ("unlimited_energy", 8, "Unlimited Energy")
+    );
+    assert_eq!(
+        (first.activation_fee.to_string(), first.initial_price.to_string(), first.price.to_string()),
+        ("0".to_owned(), "8".to_owned(), "2.8".to_owned())
+    );
+    assert_eq!((first.transactions_limit, first.duration_days), (0, 0));
+    let second = &plans[1];
+    assert_eq!((second.subscription_id.as_str(), second.id), ("energy_pack_100", 2));
+    assert_eq!(second.activation_fee.to_string(), "2.0");
+    assert_eq!((second.transactions_limit, second.duration_days), (10, 5));
+}
+
+#[tokio::test]
+async fn get_subscriptions_empty() {
+    for result in ["{}", "[]"] {
+        let server = MockServer::start().await;
+        respond(&server, "/v1/subscriptions", raw_ok(result)).await;
+        assert!(client(&server).get_subscriptions().await.unwrap().is_empty(), "{result}");
+    }
+}
+
+#[tokio::test]
+async fn get_subscriptions_rejects_unexpected_result() {
+    for result in [r#""unlimited_energy""#, "5", r#"{"unlimited_energy":"cheap"}"#] {
+        let server = MockServer::start().await;
+        respond(&server, "/v1/subscriptions", raw_ok(result)).await;
+        match client(&server).get_subscriptions().await {
+            Err(TronzapError::Serialization(e)) => assert_eq!(e.message(), "unexpected result in response"),
+            other => panic!("expected a serialization error for {result}, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn get_subscriptions_reports_api_errors() {
+    let server = MockServer::start().await;
+    respond(
+        &server,
+        "/v1/subscriptions",
+        ResponseTemplate::new(200).set_body_json(json!({"code": 6, "error": "Insufficient funds"})),
+    )
+    .await;
+    assert_eq!(common::api_error(client(&server).get_subscriptions().await).code(), Some(6));
+}
+
+#[tokio::test]
+async fn start_subscription() {
+    let server = MockServer::start().await;
+    respond(&server, "/v1/subscription/start", ok(subscription("active"))).await;
+
+    let request = StartSubscriptionRequest::new("unlimited_energy", "TAddress")
+        .duration_days(30)
+        .external_id("sub-1")
+        .activate_address(true);
+    let sub = client(&server).start_subscription(&request).await.unwrap();
+    assert_eq!(
+        only_request(&server).await,
+        json!({
+            "subscription_id": "unlimited_energy",
+            "external_id": "sub-1",
+            "params": {"address": "TAddress", "duration": 30, "transactions_limit": 0, "activate_address": true}
+        })
+    );
+    assert_eq!(sub.id, "01m4e1z3q0r7x225zc6p63m5ey");
+    assert_eq!(sub.subscription_id, "unlimited_energy");
+    assert_eq!(sub.external_id.as_deref(), Some("sub-1"));
+    assert_eq!(sub.address.as_deref(), Some("TAddress"));
+    assert_eq!(sub.status, SubscriptionStatus::Active);
+    let params = sub.params.unwrap();
+    assert_eq!(
+        (params.address.as_str(), params.duration_days, params.transactions_limit),
+        ("TAddress", 30, 0)
+    );
+    assert!(!params.activate_address);
+    assert_eq!(sub.expire_at.unwrap().unix_timestamp(), Some(1_794_065_192));
+    assert_eq!(sub.created_at.unwrap().unix_timestamp(), Some(1_791_473_192));
+    assert_eq!((sub.stopped_at, sub.started_at, sub.renewed_at), (None, None, None));
+}
+
+#[tokio::test]
+async fn start_subscription_sends_zero_limits() {
+    let server = MockServer::start().await;
+    respond(&server, "/v1/subscription/start", ok(subscription("active"))).await;
+
+    let request = StartSubscriptionRequest::new("unlimited_energy", "TAddress");
+    client(&server).start_subscription(&request).await.unwrap();
+    assert_eq!(
+        only_request(&server).await,
+        json!({
+            "subscription_id": "unlimited_energy",
+            "params": {"address": "TAddress", "duration": 0, "transactions_limit": 0}
+        })
+    );
+}
+
+#[tokio::test]
+async fn check_subscription_by_id() {
+    let server = MockServer::start().await;
+    respond(&server, "/v1/subscription/check", ok(subscription("active"))).await;
+
+    let sub = client(&server).check_subscription(&SubscriptionRequest::by_id("sub-1")).await.unwrap();
+    assert_eq!(only_request(&server).await, json!({"id": "sub-1"}));
+    assert_eq!(sub.status, SubscriptionStatus::Active);
+}
+
+#[tokio::test]
+async fn check_subscription_by_external_id() {
+    let server = MockServer::start().await;
+    respond(&server, "/v1/subscription/check", ok(subscription("paused"))).await;
+
+    let request = SubscriptionRequest::by_external_id("pedido-año-订单-😀");
+    let sub = client(&server).check_subscription(&request).await.unwrap();
+    assert_eq!(only_request(&server).await, json!({"external_id": "pedido-año-订单-😀"}));
+    assert_eq!(sub.status, SubscriptionStatus::Unknown("paused".into()));
+}
+
+#[tokio::test]
+async fn stop_subscription_without_address_and_expiry() {
+    let server = MockServer::start().await;
+    respond(
+        &server,
+        "/v1/subscription/stop",
+        ok(json!({
+            "id": "01m4e1z3q0r7x225zc6p63m5ey", "subscription_id": "unlimited_energy",
+            "created_at": "2026-10-08T15:26:32+00:00", "stopped_at": "2026-10-08T15:28:44+00:00",
+            "status": "stopped", "external_id": null,
+            "params": {"address": "TAddress", "duration": 30, "transactions_limit": 0, "activate_address": false,
+                       "future_field": 1}
+        })),
+    )
+    .await;
+
+    let request = SubscriptionRequest::by_id("01m4e1z3q0r7x225zc6p63m5ey").external_id("sub-1");
+    let sub = client(&server).stop_subscription(&request).await.unwrap();
+    assert_eq!(
+        only_request(&server).await,
+        json!({"id": "01m4e1z3q0r7x225zc6p63m5ey", "external_id": "sub-1"})
+    );
+    assert_eq!(sub.status, SubscriptionStatus::Stopped);
+    assert_eq!((sub.external_id, sub.address, sub.expire_at), (None, None, None));
+    assert_eq!(sub.stopped_at.unwrap().unix_timestamp(), Some(1_791_473_324));
+    assert_eq!(sub.params.unwrap().address, "TAddress");
+}
+
+#[tokio::test]
+async fn get_subscription_history_defaults() {
+    let server = MockServer::start().await;
+    respond(
+        &server,
+        "/v1/subscriptions/history",
+        ok(json!({"page": 1, "per_page": 10, "total": 1, "items": [{
+            "id": "01m4e1z3q0r7x225zc6p63m5ey", "status": "active", "subscription_id": "unlimited_energy",
+            "address": "TAddress", "transactions_limit": 0, "transactions_used": 4, "energy_used": 262000,
+            "total_price": 13.6, "started_at": "2026-10-08T15:26:33+00:00",
+            "renewed_at": "2026-10-08T15:27:35+00:00", "stopped_at": null,
+            "expire_at": "2026-11-07T15:26:32+00:00", "created_at": "2026-10-08T15:26:32+00:00"
+        }]})),
+    )
+    .await;
+
+    let history = client(&server).get_subscription_history(&SubscriptionHistoryRequest::new()).await.unwrap();
+    assert_eq!(only_request(&server).await, json!({"page": 1, "per_page": 10}));
+    assert_eq!((history.page, history.per_page, history.total), (1, 10, 1));
+    let item = &history.items[0];
+    assert_eq!((item.transactions_limit, item.transactions_used, item.energy_used), (0, 4, 262_000));
+    assert_eq!(item.total_price.to_string(), "13.6");
+    assert_eq!(item.params, None);
+    assert_eq!(item.renewed_at.as_ref().unwrap().unix_timestamp(), Some(1_791_473_255));
+    assert!(item.started_at.is_some());
+    assert_eq!(item.stopped_at, None);
+}
+
+#[tokio::test]
+async fn get_subscription_history_filtered_with_string_price() {
+    let server = MockServer::start().await;
+    respond(
+        &server,
+        "/v1/subscriptions/history",
+        ok(json!({"page": 2, "per_page": 50, "total": 51, "items": [{"id": "sub-51", "total_price": "8.00"}]})),
+    )
+    .await;
+
+    let request = SubscriptionHistoryRequest::new().page(2).per_page(50).status(SubscriptionStatus::Active);
+    let history = client(&server).get_subscription_history(&request).await.unwrap();
+    assert_eq!(only_request(&server).await, json!({"page": 2, "per_page": 50, "status": "active"}));
+    assert_eq!(history.items[0].total_price.to_string(), "8.00");
 }
 
 #[tokio::test]

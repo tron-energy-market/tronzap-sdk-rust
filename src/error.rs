@@ -190,7 +190,8 @@ pub enum ErrorCode {
     WalletNotFound = 5,
     /// 6: insufficient funds.
     InsufficientFunds = 6,
-    /// 10: invalid TRON address.
+    /// 10: invalid TRON address, or the address already has an active
+    /// subscription.
     InvalidTronAddress = 10,
     /// 11: invalid energy amount.
     InvalidEnergyAmount = 11,
@@ -199,7 +200,8 @@ pub enum ErrorCode {
     /// 20: transaction not found. The API reports it under the key
     /// `subscription_not_found`.
     TransactionNotFound = 20,
-    /// 21: cannot stop subscription.
+    /// 21: cannot stop subscription, for example because it has a transactions
+    /// limit.
     CannotStopSubscription = 21,
     /// 24: address not activated; activate it first.
     AddressNotActivated = 24,
