@@ -42,6 +42,13 @@ jobs:
       - name: Package
         run: cargo package --locked
 
+      - name: Upload crate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: crate
+          path: target/package/*.crate
+          if-no-files-found: error
+
   # The only job that can mint the OIDC token behind the crates.io token, so it runs
   # no build scripts: the verify job already built and packaged this commit.
   publish:
