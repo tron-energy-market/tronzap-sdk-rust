@@ -121,6 +121,40 @@ wire_enum! {
 }
 
 wire_enum! {
+    /// The state of a bulk order. A calculation is `Draft`; a started order is
+    /// `Processing`, then `Completed`, `Partial` or `Failed`, which are final.
+    BulkStatus {
+        /// A calculation that was not started.
+        Draft => "draft",
+        /// Addresses are being processed.
+        Processing => "processing",
+        /// Every address received energy.
+        Completed => "completed",
+        /// Some addresses received energy.
+        Partial => "partial",
+        /// No address received energy.
+        Failed => "failed",
+    }
+}
+
+wire_enum! {
+    /// The result of one address in a bulk order report.
+    BulkRowStatus {
+        /// The energy was delivered.
+        Delivered => "delivered",
+        /// The delivery failed.
+        Failed => "failed",
+        /// Waits for a manual check.
+        InReview => "in_review",
+        /// Skipped without a charge, for example because the address is not
+        /// activated or its price rose.
+        Skipped => "skipped",
+        /// Not processed yet.
+        Pending => "pending",
+    }
+}
+
+wire_enum! {
     /// What an AML check screens.
     AmlCheckType {
         /// A wallet address.

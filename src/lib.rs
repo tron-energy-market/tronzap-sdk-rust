@@ -69,6 +69,7 @@ pub use error::{
 };
 pub use reqwest;
 pub use rust_decimal;
+pub use serde_json;
 
 #[cfg(doctest)]
 #[doc = include_str!("../README.md")]

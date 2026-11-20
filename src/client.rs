@@ -2,7 +2,7 @@
 
 use std::fmt;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, RETRY_AFTER, USER_AGENT};
 use serde::Serialize;
@@ -16,13 +16,15 @@ use crate::error::{
 };
 use crate::requests::{
     AddressActivationRequest, AddressParam, AmlCheckRequest, AmlHistoryRequest, BandwidthTransactionRequest,
+    BulkCalculateRequest, BulkCreateRequest, BulkHistoryRequest, BulkOrderRequest, BulkReportRequest,
     CalculateRequest, CheckTransactionRequest, EnergyTransactionRequest, EstimateEnergyRequest, IdParam,
     ResourceBundleTransactionRequest, StartSubscriptionRequest, SubscriptionHistoryRequest,
     SubscriptionRequest, required,
 };
 use crate::responses::{
-    AddressInfo, AmlCheck, AmlHistory, AmlService, Balance, Calculation, DirectRechargeInfo, EnergyEstimate,
-    Services, Subscription, SubscriptionHistory, SubscriptionPlan, SubscriptionPlans, Transaction,
+    AddressInfo, AmlCheck, AmlHistory, AmlService, Balance, BulkCalculation, BulkHistory, BulkOrder,
+    Calculation, DirectRechargeInfo, EnergyEstimate, Services, Subscription, SubscriptionHistory,
+    SubscriptionPlan, SubscriptionPlans, Transaction,
 };
 
 const MAX_RESPONSE_BYTES: usize = 8 << 20;
@@ -325,6 +327,111 @@ impl TronzapClient {
         self.request("/v1/subscriptions/history", &request.wire()).await
     }
 
+    /// Validates and prices the rows of a bulk energy order. The calculation is
+    /// valid for 10 minutes; nothing is charged.
+    ///
+    /// Invalid rows do not fail the request: they come back in
+    /// [`BulkCalculation::rejected`] with their row number. When no row is valid,
+    /// the call fails with
+    /// [`ErrorCode::BulkNoValidItems`](crate::ErrorCode::BulkNoValidItems) and the
+    /// rows are in [`ApiError::bulk_rejected`](crate::ApiError::bulk_rejected).
+    ///
+    /// # Errors
+    ///
+    /// [`TronzapError::Validation`] for an invalid request; otherwise see
+    /// [`TronzapError`].
+    pub async fn bulk_calculate(&self, request: &BulkCalculateRequest) -> Result<BulkCalculation> {
+        validate(request.validate())?;
+        self.request("/v1/bulk/calculate", &request.wire()).await
+    }
+
+    /// Starts a bulk order from a calculation. Each address is charged when it is
+    /// processed, and addresses that are not activated are skipped without a
+    /// charge.
+    ///
+    /// If the price changed since the calculation, the order is not started and
+    /// the call fails with
+    /// [`ErrorCode::BulkPriceChanged`](crate::ErrorCode::BulkPriceChanged); the new
+    /// calculation is in
+    /// [`ApiError::bulk_calculation`](crate::ApiError::bulk_calculation). Confirm
+    /// the new total, then start it by its id. Repeating a call with the same id
+    /// or external id returns the order already started.
+    ///
+    /// # Errors
+    ///
+    /// [`TronzapError::Validation`] for an invalid request; otherwise see
+    /// [`TronzapError`].
+    pub async fn bulk_create(&self, request: &BulkCreateRequest) -> Result<BulkOrder> {
+        validate(request.validate())?;
+        self.request("/v1/bulk/create", &request.wire()).await
+    }
+
+    /// Returns the state and progress of a bulk order.
+    ///
+    /// # Errors
+    ///
+    /// [`TronzapError::Validation`] for an invalid request; otherwise see
+    /// [`TronzapError`].
+    pub async fn bulk_check(&self, request: &BulkOrderRequest) -> Result<BulkOrder> {
+        validate(request.validate())?;
+        self.request("/v1/bulk/check", &request.wire()).await
+    }
+
+    /// Returns one page of your bulk orders, newest first.
+    ///
+    /// # Errors
+    ///
+    /// [`TronzapError::Validation`] for an invalid request; otherwise see
+    /// [`TronzapError`].
+    pub async fn get_bulk_history(&self, request: &BulkHistoryRequest) -> Result<BulkHistory> {
+        validate(request.validate())?;
+        self.request("/v1/bulk/history", &request.wire()).await
+    }
+
+    /// Returns the per-address report of a bulk order as CSV with a header line
+    /// and the columns `row`, `address`, `amount`, `status`, `reason`, `charged`
+    /// and `transaction_id`. Rows the calculation rejected are not included.
+    ///
+    /// # Errors
+    ///
+    /// [`TronzapError::Validation`] for an invalid request,
+    /// [`TronzapError::Serialization`] for a 2xx answer that is not CSV; otherwise
+    /// see [`TronzapError`].
+    pub async fn bulk_report(&self, request: &BulkReportRequest) -> Result<String> {
+        validate(request.validate())?;
+        let response = self.send("/v1/bulk/report", &request.wire()).await?;
+        let csv = response.content_type.as_deref().and_then(|t| t.split(';').next()).map(str::trim);
+        if (200..300).contains(&response.status) && csv.is_some_and(|t| t.eq_ignore_ascii_case("text/csv")) {
+            return Ok(String::from_utf8_lossy(&response.body).into_owned());
+        }
+        envelope(response.status, response.retry_after, &response.body)?;
+        Err(TronzapError::Serialization(SerializationError::response(
+            "expected a CSV report",
+            response.status,
+            String::from_utf8_lossy(&response.body).into_owned(),
+            None,
+        )))
+    }
+
+    /// Checks the `X-Signature` header of a bulk order webhook: the SHA-256 of the
+    /// raw body followed by your API secret, in hex.
+    ///
+    /// Pass the body exactly as received, before any JSON parsing.
+    ///
+    /// ```no_run
+    /// # fn run(client: tronzap_sdk::TronzapClient, body: &[u8], signature: &str) {
+    /// if !client.verify_webhook_signature(body, signature) {
+    ///     // answer 401 and ignore the request
+    /// }
+    /// # }
+    /// ```
+    pub fn verify_webhook_signature(&self, body: impl AsRef<[u8]>, signature: &str) -> bool {
+        let expected = sign(body.as_ref(), &self.config.api_secret);
+        let actual = signature.trim().to_ascii_lowercase();
+        expected.len() == actual.len()
+            && expected.bytes().zip(actual.bytes()).fold(0u8, |diff, (a, b)| diff | (a ^ b)) == 0
+    }
+
     /// Sends a signed request to any endpoint and decodes its `result`.
     ///
     /// Use it for endpoints this SDK does not wrap yet, and prefer the typed
@@ -378,8 +485,10 @@ impl TronzapClient {
 
         let status = response.status().as_u16();
         let retry_after = retry_after(response.headers());
+        let content_type =
+            response.headers().get(CONTENT_TYPE).and_then(|v| v.to_str().ok()).map(str::to_owned);
         let body = read_body(response).await?;
-        Ok(RawResponse { status, retry_after, body })
+        Ok(RawResponse { status, retry_after, content_type, body })
     }
 }
 
@@ -403,6 +512,7 @@ struct Empty {}
 struct RawResponse {
     status: u16,
     retry_after: Option<Duration>,
+    content_type: Option<String>,
     body: Vec<u8>,
 }
 
@@ -432,8 +542,16 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn retry_after(headers: &HeaderMap) -> Option<Duration> {
-    let value = headers.get(RETRY_AFTER)?.to_str().ok()?;
-    value.trim().parse().ok().map(Duration::from_secs)
+    let value = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
+    if let Ok(seconds) = value.parse() {
+        return Some(Duration::from_secs(seconds));
+    }
+    let when = httpdate::parse_http_date(value).ok()?;
+    Some(when.duration_since(SystemTime::now()).unwrap_or(Duration::ZERO))
+}
+
+fn retry_after_field(map: &Map<String, Value>) -> Option<Duration> {
+    map.get("retry_after").and_then(Value::as_u64).map(Duration::from_secs)
 }
 
 async fn read_body(mut response: reqwest::Response) -> Result<Vec<u8>> {
@@ -496,9 +614,9 @@ fn envelope(status: u16, retry_after: Option<Duration>, body: &[u8]) -> Result<V
                 code: None,
                 key: None,
                 message: status_message(status),
-                request_id: None,
                 body: text(),
                 retry_after,
+                ..ApiErrorData::default()
             }));
         }
         Ok(_) => {
@@ -532,7 +650,9 @@ fn envelope(status: u16, retry_after: Option<Duration>, body: &[u8]) -> Result<V
             message,
             request_id: string(&map, "request_id"),
             body: text(),
-            retry_after,
+            retry_after: retry_after.or_else(|| retry_after_field(&map)),
+            result: map.remove("result").filter(|v| !v.is_null()),
+            ..ApiErrorData::default()
         }));
     }
 
@@ -685,7 +805,76 @@ mod tests {
         assert_eq!(retry_after(&headers), None);
         headers.insert(RETRY_AFTER, "7".parse().unwrap());
         assert_eq!(retry_after(&headers), Some(Duration::from_secs(7)));
-        headers.insert(RETRY_AFTER, "Wed, 21 Oct 2026 07:28:00 GMT".parse().unwrap());
+        headers.insert(RETRY_AFTER, "Wed, 21 Oct 2015 07:28:00 GMT".parse().unwrap());
+        assert_eq!(retry_after(&headers), Some(Duration::ZERO));
+        let later = httpdate::fmt_http_date(SystemTime::now() + Duration::from_secs(120));
+        headers.insert(RETRY_AFTER, later.parse().unwrap());
+        let wait = retry_after(&headers).unwrap();
+        assert!((Duration::from_secs(115)..=Duration::from_secs(120)).contains(&wait), "{wait:?}");
+        headers.insert(RETRY_AFTER, "soon".parse().unwrap());
         assert_eq!(retry_after(&headers), None);
+    }
+
+    #[test]
+    fn api_errors_keep_the_result_and_retry_after_field() {
+        let e = api(run(429, r#"{"code":429,"error":"Too many requests","retry_after":12}"#));
+        assert_eq!((e.retry_after(), e.result()), (Some(Duration::from_secs(12)), None));
+        assert!(e.is_rate_limited());
+        assert_eq!(e.error_code(), Some(crate::ErrorCode::RateLimited));
+        let e = api(decode::<Value>(
+            429,
+            Some(Duration::from_secs(3)),
+            br#"{"code":429,"error":"Too many requests","retry_after":12}"#,
+        ));
+        assert_eq!(e.retry_after(), Some(Duration::from_secs(3)));
+        for value in ["-1", "\"12\"", "1.5", "true"] {
+            let body = format!(r#"{{"code":429,"error":"x","retry_after":{value}}}"#);
+            assert_eq!(api(run(429, &body)).retry_after(), None, "{value}");
+        }
+        let e = api(run(200, r#"{"code":93,"error":"Too many items","result":{"max":10000}}"#));
+        assert_eq!(e.result(), Some(&json!({"max": 10000})));
+        assert_eq!((e.bulk_calculation(), e.bulk_rejected()), (None, None));
+        let e = api(run(200, r#"{"code":90,"error":"Bulk order not found","result":null}"#));
+        assert_eq!(e.result(), None);
+        let e = api(run(503, r#"{"code":0,"retry_after":5}"#));
+        assert_eq!((e.code(), e.retry_after()), (None, Some(Duration::from_secs(5))));
+    }
+
+    #[test]
+    fn bulk_errors_carry_their_data_typed() {
+        let e = api(run(
+            200,
+            r#"{"code":92,"error":"Price changed","result":{"id":"calc-2","status":"draft","total_amount":"1300.5"}}"#,
+        ));
+        let calculation = e.bulk_calculation().unwrap();
+        assert_eq!(
+            (calculation.id.as_str(), calculation.total_amount.to_string()),
+            ("calc-2", "1300.5".into())
+        );
+        assert_eq!(e.result().unwrap()["id"], "calc-2");
+        let e = api(run(
+            200,
+            r#"{"code":94,"error":"No valid items","result":{"rejected":[{"row":1,"address":"abc","reason":"duplicate"}]}}"#,
+        ));
+        assert_eq!(e.bulk_rejected().unwrap()[0].reason, "duplicate");
+        for result in [r#""text""#, r#"{"total_amount":"a lot"}"#] {
+            let e = api(run(200, &format!(r#"{{"code":92,"error":"x","result":{result}}}"#)));
+            assert!(e.bulk_calculation().is_none());
+            assert!(e.result().is_some());
+        }
+        let e = api(run(200, r#"{"code":94,"error":"x","result":{"rejected":"none"}}"#));
+        assert!(e.bulk_rejected().is_none());
+    }
+
+    #[test]
+    fn webhook_signature_is_checked_in_constant_time() {
+        let Ok(client) = TronzapClient::new("token", "secret") else { panic!("client") };
+        let body = r#"{"id":"bulk-1","status":"completed","note":"año"}"#;
+        let signed = sign(body.as_bytes(), "secret");
+        assert!(client.verify_webhook_signature(body, &signed));
+        assert!(client.verify_webhook_signature(body.as_bytes(), &format!(" {} ", signed.to_uppercase())));
+        assert!(!client.verify_webhook_signature(format!("{body} "), &signed));
+        assert!(!client.verify_webhook_signature(body, ""));
+        assert!(!client.verify_webhook_signature(body, &signed[..32]));
     }
 }

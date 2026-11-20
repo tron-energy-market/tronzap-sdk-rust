@@ -10,13 +10,14 @@
 //! export TRONZAP_TRANSACTION_ID=id             # optional
 //! export TRONZAP_AML_CHECK_ID=id               # optional
 //! export TRONZAP_SUBSCRIPTION_ID=id            # optional
+//! export TRONZAP_BULK_ID=id                    # optional
 //! cargo run --example basic_usage
 //! ```
 //!
 //! Setting `TRONZAP_ALLOW_PURCHASES=1` also exercises the endpoints that create
-//! transactions and AML checks. Those DEBIT THE ACCOUNT BALANCE. It is meant for
-//! verifying an integration against a development environment, and it also needs
-//! `TRONZAP_ADDRESS`.
+//! transactions, AML checks and a one-address bulk order. Those DEBIT THE ACCOUNT
+//! BALANCE. It is meant for verifying an integration against a development
+//! environment, and it also needs `TRONZAP_ADDRESS`.
 //!
 //! Setting `TRONZAP_SUBSCRIPTION_PLAN` (a plan key such as `unlimited_energy`) as
 //! well starts a one-day subscription to that plan for `TRONZAP_ADDRESS` and stops
@@ -28,11 +29,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tronzap_sdk::models::Timestamp;
 use tronzap_sdk::requests::{
     AddressActivationRequest, AmlCheckRequest, AmlHistoryRequest, BandwidthTransactionRequest,
-    CalculateRequest, CheckTransactionRequest, EnergyTransactionRequest, EstimateEnergyRequest,
-    ResourceBundleTransactionRequest, StartSubscriptionRequest, SubscriptionHistoryRequest,
-    SubscriptionRequest,
+    BulkCalculateRequest, BulkCreateRequest, BulkHistoryRequest, BulkItem, BulkOrderRequest,
+    BulkReportRequest, CalculateRequest, CheckTransactionRequest, EnergyTransactionRequest,
+    EstimateEnergyRequest, ResourceBundleTransactionRequest, StartSubscriptionRequest,
+    SubscriptionHistoryRequest, SubscriptionRequest,
 };
-use tronzap_sdk::responses::{Subscription, Transaction};
+use tronzap_sdk::responses::{BulkCalculation, BulkOrder, Subscription, Transaction};
 use tronzap_sdk::{ErrorCode, TronzapClient, TronzapError};
 
 const ENERGY: u64 = 65000;
@@ -127,6 +129,12 @@ async fn main() -> ExitCode {
         }
     });
 
+    let request = BulkHistoryRequest::new().per_page(3);
+    run.step("get_bulk_history", client.get_bulk_history(&request).await, |h| {
+        println!("  page {}, {} of {} bulk order(s)", h.page, h.items.len(), h.total);
+        h.items.into_iter().for_each(print_bulk_order);
+    });
+
     let address = env("TRONZAP_ADDRESS");
     match &address {
         Some(address) => {
@@ -143,10 +151,16 @@ async fn main() -> ExitCode {
             run.step("calculate", client.calculate(&request).await, |c| {
                 println!("  {} energy for {}h costs {}", c.amount, c.duration, c.total);
             });
+            let request = BulkCalculateRequest::new([
+                BulkItem::new(address.as_str(), ENERGY),
+                BulkItem::new("not-an-address", ENERGY),
+            ]);
+            run.step("bulk_calculate", client.bulk_calculate(&request).await, print_bulk_calculation);
         }
         None => {
             Run::skip("get_address_info");
             Run::skip("calculate");
+            Run::skip("bulk_calculate");
         }
     }
 
@@ -182,6 +196,20 @@ async fn main() -> ExitCode {
             run.step("check_subscription", client.check_subscription(&request).await, print_subscription);
         }
         None => Run::skip("check_subscription"),
+    }
+
+    match env("TRONZAP_BULK_ID") {
+        Some(id) => {
+            run.step(
+                "bulk_check",
+                client.bulk_check(&BulkOrderRequest::by_id(id.as_str())).await,
+                print_bulk_order,
+            );
+            run.step("bulk_report", client.bulk_report(&BulkReportRequest::by_id(id)).await, |csv| {
+                csv.lines().take(6).for_each(|line| println!("  {line}"));
+            });
+        }
+        None => Run::skip("bulk_check"),
     }
 
     if env("TRONZAP_ALLOW_PURCHASES").as_deref() != Some("1") {
@@ -233,6 +261,32 @@ async fn main() -> ExitCode {
         run.step("create_aml_check", client.create_aml_check(&request).await, |c| {
             println!("  AML check {} is {}", c.id, c.status);
         });
+
+        let request = BulkCalculateRequest::new([BulkItem::new(address.as_str(), ENERGY)]);
+        let mut calculation_id = None;
+        run.step("bulk_calculate", client.bulk_calculate(&request).await, |c| {
+            calculation_id = Some(c.id.clone());
+            print_bulk_calculation(c);
+        });
+        if let Some(id) = calculation_id {
+            let bulk_id = format!("{run_id}-bulk");
+            let mut result =
+                client.bulk_create(&BulkCreateRequest::new(id).external_id(bulk_id.as_str())).await;
+            let new_id = match &result {
+                Err(TronzapError::Api(e)) => e.bulk_calculation().map(|c| {
+                    println!("\nbulk_create\n  price changed, new total {}", c.total_amount);
+                    c.id.clone()
+                }),
+                _ => None,
+            };
+            if let Some(new_id) = new_id {
+                let request = BulkCreateRequest::new(new_id).external_id(bulk_id.as_str());
+                result = client.bulk_create(&request).await;
+            }
+            run.step("bulk_create", result, print_bulk_order);
+            let request = BulkOrderRequest::by_external_id(bulk_id);
+            run.step("bulk_check", client.bulk_check(&request).await, print_bulk_order);
+        }
 
         match env("TRONZAP_SUBSCRIPTION_PLAN") {
             Some(plan) => {
@@ -316,6 +370,37 @@ fn print_subscription(sub: Subscription) {
         describe(sub.created_at.as_ref()),
         describe(sub.expire_at.as_ref()),
         describe(sub.stopped_at.as_ref())
+    );
+}
+
+fn print_bulk_calculation(c: BulkCalculation) {
+    println!(
+        "  {} {}: {} accepted, {} rejected, total {}, expires {}",
+        c.id,
+        c.status,
+        c.accepted,
+        c.rejected_count,
+        c.total_amount,
+        describe(c.expires_at.as_ref())
+    );
+    for row in &c.rejected {
+        println!("  rejected row {} {}: {}", row.row, row.address, row.reason);
+    }
+}
+
+fn print_bulk_order(order: BulkOrder) {
+    println!(
+        "  {} {}: {}/{} processed, {} delivered, {} failed, {} in review, {} skipped, charged {} of {}",
+        order.id,
+        order.status,
+        order.processed,
+        order.total,
+        order.delivered,
+        order.failed,
+        order.in_review,
+        order.skipped,
+        order.charged_amount,
+        order.total_amount
     );
 }
 

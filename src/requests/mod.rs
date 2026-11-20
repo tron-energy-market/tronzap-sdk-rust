@@ -17,6 +17,7 @@
 //! the API.
 
 mod aml;
+mod bulk;
 mod subscription;
 mod transaction;
 
@@ -25,6 +26,10 @@ use serde::Serialize;
 use crate::error::ValidationError;
 
 pub use aml::{AmlCheckRequest, AmlHistoryRequest};
+pub use bulk::{
+    BulkCalculateRequest, BulkCreateRequest, BulkHistoryRequest, BulkItem, BulkOrderRequest,
+    BulkReportRequest,
+};
 pub use subscription::{StartSubscriptionRequest, SubscriptionHistoryRequest, SubscriptionRequest};
 pub use transaction::{
     AddressActivationRequest, BandwidthTransactionRequest, CheckTransactionRequest, EnergyTransactionRequest,

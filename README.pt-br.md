@@ -175,6 +175,12 @@ tronzap-sdk = { version = "1.1", default-features = false, features = ["native-t
 | `check_subscription(&request)` | `/v1/subscription/check` | Status de uma assinatura, por id ou id externo |
 | `stop_subscription(&request)` | `/v1/subscription/stop` | Interromper uma assinatura |
 | `get_subscription_history(&request)` | `/v1/subscriptions/history` | Histórico paginado de assinaturas |
+| `bulk_calculate(&request)` | `/v1/bulk/calculate` | Validar e calcular as linhas de um pedido de energia em massa |
+| `bulk_create(&request)` | `/v1/bulk/create` | Iniciar um pedido em massa a partir de um cálculo |
+| `bulk_check(&request)` | `/v1/bulk/check` | Status e progresso de um pedido em massa |
+| `get_bulk_history(&request)` | `/v1/bulk/history` | Histórico paginado de pedidos em massa |
+| `bulk_report(&request)` | `/v1/bulk/report` | Relatório por endereço de um pedido em massa, em CSV |
+| `verify_webhook_signature(body, signature)` | — | Verificar o `X-Signature` do webhook de um pedido em massa |
 | `request(endpoint, &params)` | qualquer | Chamada assinada a um endpoint que o SDK ainda não cobre |
 
 Todo método é `async` e retorna `Result<T, TronzapError>`. Descartar o future
@@ -329,6 +335,84 @@ histórico retorna em vez disso os contadores de uso `transactions_used`,
 limite de transações não pode ser interrompida
 (`ErrorCode::CannotStopSubscription`).
 
+### Pedidos em massa
+
+Compre energia para até 10 000 endereços em um único pedido. `bulk_calculate`
+valida e calcula as linhas e retorna um cálculo válido por 10 minutos; nada é
+cobrado. Linhas inválidas não fazem a requisição falhar: elas voltam em `rejected`
+com o número da linha. `bulk_create` inicia o pedido; cada endereço é cobrado
+quando é processado, e endereços não ativados são pulados sem cobrança.
+
+Se o preço mudou desde o cálculo, `bulk_create` não inicia o pedido e falha com
+`ErrorCode::BulkPriceChanged`. `ApiError::bulk_calculation()` é o novo cálculo:
+confirme o novo total e inicie-o pelo `id`.
+
+```rust,no_run
+use tronzap_sdk::requests::{
+    BulkCalculateRequest, BulkCreateRequest, BulkItem, BulkOrderRequest, BulkReportRequest,
+};
+use tronzap_sdk::{ErrorCode, TronzapClient, TronzapError};
+
+async fn bulk(client: &TronzapClient) -> tronzap_sdk::Result<()> {
+    let request = BulkCalculateRequest::new([
+        BulkItem::new("TRecipientAddress1", 65000),
+        BulkItem::new("TRecipientAddress2", 131000),
+    ]);
+    let calculation = client.bulk_calculate(&request).await?;
+    for row in &calculation.rejected {
+        println!("row {}: {}", row.row, row.reason);
+    }
+
+    let request = BulkCreateRequest::new(&calculation.id)
+        .external_id("order-42")
+        .webhook_url("https://example.com/tronzap/bulk");
+    let order = match client.bulk_create(&request).await {
+        Err(TronzapError::Api(e)) if e.error_code() == Some(ErrorCode::BulkPriceChanged) => {
+            match e.bulk_calculation() {
+                // confirme o novo total e inicie-o
+                Some(new_calculation) => {
+                    let request = BulkCreateRequest::new(&new_calculation.id).external_id("order-42");
+                    client.bulk_create(&request).await?
+                }
+                None => return Err(TronzapError::Api(e)),
+            }
+        }
+        result => result?,
+    };
+
+    // consulte até Completed, Partial ou Failed
+    let order = client.bulk_check(&BulkOrderRequest::by_external_id("order-42")).await?;
+    // row,address,amount,status,reason,charged,transaction_id
+    let csv = client.bulk_report(&BulkReportRequest::by_id(&order.id)).await?;
+    println!("{} {}", order.status, csv.lines().count());
+    Ok(())
+}
+```
+
+Um pedido passa pelos valores de `BulkStatus`; `Completed`, `Partial` e `Failed`
+são finais. `BulkReportRequest::status` filtra o relatório por `BulkRowStatus`.
+
+Com `webhook_url`, a API envia um `POST` quando o pedido chega a um status final.
+Verifique o cabeçalho `X-Signature` com o corpo bruto antes de confiar nele, no
+framework web que você usa:
+
+```rust,no_run
+use tronzap_sdk::TronzapClient;
+
+fn bulk_webhook(client: &TronzapClient, body: &[u8], x_signature: Option<&str>) -> u16 {
+    if !client.verify_webhook_signature(body, x_signature.unwrap_or_default()) {
+        return 401;
+    }
+    // {"id":"01kb2m5x9qj4v8n3c7d6e5f4g3","external_id":"order-42","status":"partial"}
+    let order: tronzap_sdk::serde_json::Value = match tronzap_sdk::serde_json::from_slice(body) {
+        Ok(order) => order,
+        Err(_) => return 400,
+    };
+    println!("{} {}", order["id"], order["status"]);
+    200
+}
+```
+
 ## Tratamento de erros
 
 Toda falha é um `TronzapError`. Faça match nas variantes para tratar um tipo
@@ -346,8 +430,9 @@ TronzapError
 
 `ApiError` traz o status HTTP (`status()`), o código de erro da API (`code()` e
 `error_code()`), a chave do erro, a mensagem, o ID da requisição, o corpo bruto da
-resposta (`body()`) e, para HTTP 429, o intervalo de `Retry-After`.
-`SerializationError` também traz o status e o corpo bruto.
+resposta (`body()`), o `result` enviado com o erro (`result()`) e quanto esperar
+antes de tentar de novo (`retry_after()`). `SerializationError` também traz o
+status e o corpo bruto.
 
 ```rust,no_run
 use tronzap_sdk::requests::EnergyTransactionRequest;
@@ -386,6 +471,31 @@ com status 2xx e outras com 4xx ou 5xx, então um payload legível com código
 diferente de zero é sempre informado com esse código, nunca como um simples erro
 HTTP.
 
+`ApiError::result()` é o `result` que a API enviou com o erro, como
+`serde_json::Value`. O SDK lê os dados de `BulkPriceChanged` e `BulkNoValidItems`
+em `ApiError::bulk_calculation()` e `ApiError::bulk_rejected()`. Um limite de
+requisições é um `ApiError` com `ErrorCode::RateLimited` da API, ou um HTTP 429 sem
+código, p. ex. de um proxy; `is_rate_limited()` é `true` nos dois casos.
+`retry_after()` vem do cabeçalho `Retry-After` (segundos ou uma data HTTP) ou do
+campo `retry_after`, e é `None` quando o servidor não informou quanto esperar:
+
+```rust,no_run
+use std::time::Duration;
+
+use tronzap_sdk::requests::BulkHistoryRequest;
+use tronzap_sdk::{ErrorCode, TronzapClient, TronzapError};
+
+async fn history(client: &TronzapClient) -> tronzap_sdk::Result<()> {
+    match client.get_bulk_history(&BulkHistoryRequest::new()).await {
+        Err(TronzapError::Api(e)) if e.error_code() == Some(ErrorCode::RateLimited) => {
+            tokio::time::sleep(e.retry_after().unwrap_or(Duration::from_secs(60))).await;
+        }
+        result => println!("{} bulk order(s)", result?.total),
+    }
+    Ok(())
+}
+```
+
 ### Códigos de erro da API
 
 | Código | Constante | Descrição |
@@ -404,6 +514,14 @@ HTTP.
 | 30 | `AmlCheckNotFound` | Verificação AML não encontrada |
 | 35 | `ServiceNotAvailable` | Serviço indisponível |
 | 50 | `InvalidBandwidthAmount` | Quantidade de bandwidth inválida |
+| 90 | `BulkNotFound` | Pedido em massa não encontrado |
+| 91 | `BulkExpired` | O cálculo expirou, calcule novamente |
+| 92 | `BulkPriceChanged` | O preço mudou; o novo cálculo está em `bulk_calculation()` |
+| 93 | `BulkTooManyItems` | Mais de 10 000 linhas |
+| 94 | `BulkNoValidItems` | Nenhuma linha válida; elas estão em `bulk_rejected()` |
+| 95 | `BulkResourceNotSupported` | Só energia pode ser pedida em massa |
+| 96 | `PayloadTooLarge` | Corpo da requisição grande demais (HTTP 413) |
+| 429 | `RateLimited` | Requisições demais; aguarde `retry_after()` se informado |
 | 500 | `InternalServerError` | Erro interno do servidor: contate o suporte |
 
 As constantes são variantes do enum `ErrorCode`. Para um código que esta versão do

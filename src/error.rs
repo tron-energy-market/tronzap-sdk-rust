@@ -4,6 +4,10 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::time::Duration;
 
+use serde_json::Value;
+
+use crate::responses::{BulkCalculation, BulkRejectedRow};
+
 /// A `Result` whose error is [`TronzapError`].
 pub type Result<T, E = TronzapError> = std::result::Result<T, E>;
 
@@ -91,7 +95,7 @@ impl StdError for TronzapError {
 #[derive(Debug, Clone)]
 pub struct ApiError(Box<ApiErrorData>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ApiErrorData {
     pub(crate) status: u16,
     pub(crate) code: Option<i64>,
@@ -100,10 +104,27 @@ pub(crate) struct ApiErrorData {
     pub(crate) request_id: Option<String>,
     pub(crate) body: String,
     pub(crate) retry_after: Option<Duration>,
+    pub(crate) result: Option<Value>,
+    pub(crate) bulk_calculation: Option<BulkCalculation>,
+    pub(crate) bulk_rejected: Option<Vec<BulkRejectedRow>>,
 }
 
 impl ApiError {
-    pub(crate) fn new(data: ApiErrorData) -> Self {
+    pub(crate) fn new(mut data: ApiErrorData) -> Self {
+        if let Some(result @ Value::Object(_)) = &data.result {
+            match data.code.and_then(ErrorCode::from_code) {
+                Some(ErrorCode::BulkPriceChanged) => {
+                    data.bulk_calculation = serde_json::from_value(result.clone()).ok();
+                }
+                Some(ErrorCode::BulkNoValidItems) => {
+                    data.bulk_rejected =
+                        serde_json::from_value::<crate::responses::BulkRejectedRows>(result.clone())
+                            .ok()
+                            .map(|rows| rows.rejected);
+                }
+                _ => {}
+            }
+        }
         ApiError(Box::new(data))
     }
 
@@ -145,14 +166,38 @@ impl ApiError {
         &self.0.body
     }
 
-    /// Returns the delay from the `Retry-After` header, when the API sent one.
+    /// Returns how long to wait before retrying, from the `Retry-After` header
+    /// (seconds or an HTTP date) or the `retry_after` field, or `None` when the
+    /// server sent neither.
     pub fn retry_after(&self) -> Option<Duration> {
         self.0.retry_after
     }
 
-    /// Returns `true` for HTTP 429.
+    /// Returns the `result` the API sent along with the error, such as the new
+    /// calculation of [`ErrorCode::BulkPriceChanged`], or `None`.
+    pub fn result(&self) -> Option<&Value> {
+        self.0.result.as_ref()
+    }
+
+    /// Returns the new calculation of [`ErrorCode::BulkPriceChanged`]: confirm the
+    /// new total, then start the order with its
+    /// [`id`](BulkCalculation::id). `None` for any other error, or when the
+    /// result could not be read; [`result`](Self::result) still holds it then.
+    pub fn bulk_calculation(&self) -> Option<&BulkCalculation> {
+        self.0.bulk_calculation.as_ref()
+    }
+
+    /// Returns the rejected rows of [`ErrorCode::BulkNoValidItems`]. `None` for
+    /// any other error, or when the result could not be read;
+    /// [`result`](Self::result) still holds it then.
+    pub fn bulk_rejected(&self) -> Option<&[BulkRejectedRow]> {
+        self.0.bulk_rejected.as_deref()
+    }
+
+    /// Returns `true` for HTTP 429 or the error code
+    /// [`ErrorCode::RateLimited`].
     pub fn is_rate_limited(&self) -> bool {
-        self.0.status == 429
+        self.0.status == 429 || self.0.code == Some(ErrorCode::RateLimited.code())
     }
 
     /// Returns `true` for an HTTP 5xx status or the API's internal error code 500.
@@ -213,6 +258,27 @@ pub enum ErrorCode {
     ServiceNotAvailable = 35,
     /// 50: invalid bandwidth amount.
     InvalidBandwidthAmount = 50,
+    /// 90: bulk order not found. A calculation that was never started is not an
+    /// order.
+    BulkNotFound = 90,
+    /// 91: the bulk calculation expired; calculate again. A calculation is valid
+    /// for 10 minutes.
+    BulkExpired = 91,
+    /// 92: the price changed since the calculation; the new calculation is in
+    /// [`ApiError::bulk_calculation`]. Confirm the new total, then start the order
+    /// with its id.
+    BulkPriceChanged = 92,
+    /// 93: too many rows; send at most 10 000 in one calculation.
+    BulkTooManyItems = 93,
+    /// 94: no valid rows; they are in [`ApiError::bulk_rejected`].
+    BulkNoValidItems = 94,
+    /// 95: the resource cannot be ordered in bulk; only energy can.
+    BulkResourceNotSupported = 95,
+    /// 96: the request body is too large (HTTP 413); send fewer rows.
+    PayloadTooLarge = 96,
+    /// 429: too many requests; wait [`ApiError::retry_after`], when it is set,
+    /// and retry.
+    RateLimited = 429,
     /// 500: internal server error; contact support if it persists.
     InternalServerError = 500,
 }
@@ -248,6 +314,14 @@ impl ErrorCode {
             30 => ErrorCode::AmlCheckNotFound,
             35 => ErrorCode::ServiceNotAvailable,
             50 => ErrorCode::InvalidBandwidthAmount,
+            90 => ErrorCode::BulkNotFound,
+            91 => ErrorCode::BulkExpired,
+            92 => ErrorCode::BulkPriceChanged,
+            93 => ErrorCode::BulkTooManyItems,
+            94 => ErrorCode::BulkNoValidItems,
+            95 => ErrorCode::BulkResourceNotSupported,
+            96 => ErrorCode::PayloadTooLarge,
+            429 => ErrorCode::RateLimited,
             500 => ErrorCode::InternalServerError,
             _ => return None,
         })
@@ -473,9 +547,7 @@ mod tests {
             code,
             key: key.map(str::to_owned),
             message: "Insufficient funds".to_owned(),
-            request_id: None,
-            body: String::new(),
-            retry_after: None,
+            ..ApiErrorData::default()
         })
     }
 
@@ -488,6 +560,8 @@ mod tests {
         }
         assert_eq!(ErrorCode::from_code(1), Some(ErrorCode::AuthError));
         assert_eq!(ErrorCode::from_code(50), Some(ErrorCode::InvalidBandwidthAmount));
+        assert_eq!(ErrorCode::from_code(92), Some(ErrorCode::BulkPriceChanged));
+        assert_eq!(ErrorCode::from_code(429), Some(ErrorCode::RateLimited));
         assert_eq!(ErrorCode::from_code(0), None);
     }
 

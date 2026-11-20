@@ -176,6 +176,12 @@ tronzap-sdk = { version = "1.1", default-features = false, features = ["native-t
 | `check_subscription(&request)` | `/v1/subscription/check` | Статус подписки по id или внешнему id |
 | `stop_subscription(&request)` | `/v1/subscription/stop` | Остановить подписку |
 | `get_subscription_history(&request)` | `/v1/subscriptions/history` | История подписок постранично |
+| `bulk_calculate(&request)` | `/v1/bulk/calculate` | Проверка и расчёт строк массового заказа энергии |
+| `bulk_create(&request)` | `/v1/bulk/create` | Запуск массового заказа по расчёту |
+| `bulk_check(&request)` | `/v1/bulk/check` | Статус и прогресс массового заказа |
+| `get_bulk_history(&request)` | `/v1/bulk/history` | История массовых заказов постранично |
+| `bulk_report(&request)` | `/v1/bulk/report` | Отчёт массового заказа по адресам в CSV |
+| `verify_webhook_signature(body, signature)` | — | Проверка `X-Signature` вебхука массового заказа |
 | `request(endpoint, &params)` | любой | Подписанный вызов endpoint, который SDK ещё не оборачивает |
 
 Каждый метод `async` и возвращает `Result<T, TronzapError>`. Если отбросить
@@ -326,6 +332,84 @@ async fn subscribe(client: &TronzapClient) -> tronzap_sdk::Result<()> {
 `total_price`, а `params` равен `None`. Подписку с лимитом транзакций остановить
 нельзя (`ErrorCode::CannotStopSubscription`).
 
+### Массовые заказы
+
+Покупка энергии на 10 000 адресов одним заказом. `bulk_calculate` проверяет и
+рассчитывает строки и возвращает расчёт, действительный 10 минут; ничего не
+списывается. Некорректные строки не валят запрос: они возвращаются в `rejected` с
+номером строки. `bulk_create` запускает заказ; каждый адрес списывается в момент
+обработки, неактивированные адреса пропускаются без списания.
+
+Если цена изменилась после расчёта, `bulk_create` не запускает заказ и возвращает
+ошибку `ErrorCode::BulkPriceChanged`. `ApiError::bulk_calculation()` — новый
+расчёт: подтвердите новую сумму и запустите его по `id`.
+
+```rust,no_run
+use tronzap_sdk::requests::{
+    BulkCalculateRequest, BulkCreateRequest, BulkItem, BulkOrderRequest, BulkReportRequest,
+};
+use tronzap_sdk::{ErrorCode, TronzapClient, TronzapError};
+
+async fn bulk(client: &TronzapClient) -> tronzap_sdk::Result<()> {
+    let request = BulkCalculateRequest::new([
+        BulkItem::new("TRecipientAddress1", 65000),
+        BulkItem::new("TRecipientAddress2", 131000),
+    ]);
+    let calculation = client.bulk_calculate(&request).await?;
+    for row in &calculation.rejected {
+        println!("row {}: {}", row.row, row.reason);
+    }
+
+    let request = BulkCreateRequest::new(&calculation.id)
+        .external_id("order-42")
+        .webhook_url("https://example.com/tronzap/bulk");
+    let order = match client.bulk_create(&request).await {
+        Err(TronzapError::Api(e)) if e.error_code() == Some(ErrorCode::BulkPriceChanged) => {
+            match e.bulk_calculation() {
+                // подтвердите новую сумму и запустите его
+                Some(new_calculation) => {
+                    let request = BulkCreateRequest::new(&new_calculation.id).external_id("order-42");
+                    client.bulk_create(&request).await?
+                }
+                None => return Err(TronzapError::Api(e)),
+            }
+        }
+        result => result?,
+    };
+
+    // опрашивайте до Completed, Partial или Failed
+    let order = client.bulk_check(&BulkOrderRequest::by_external_id("order-42")).await?;
+    // row,address,amount,status,reason,charged,transaction_id
+    let csv = client.bulk_report(&BulkReportRequest::by_id(&order.id)).await?;
+    println!("{} {}", order.status, csv.lines().count());
+    Ok(())
+}
+```
+
+Заказ проходит значения `BulkStatus`; `Completed`, `Partial` и `Failed` —
+финальные. `BulkReportRequest::status` фильтрует отчёт по `BulkRowStatus`.
+
+С `webhook_url` API отправляет на него один `POST`, когда заказ становится
+финальным. Перед тем как доверять ему, проверьте заголовок `X-Signature` по сырому
+телу, в любом веб-фреймворке:
+
+```rust,no_run
+use tronzap_sdk::TronzapClient;
+
+fn bulk_webhook(client: &TronzapClient, body: &[u8], x_signature: Option<&str>) -> u16 {
+    if !client.verify_webhook_signature(body, x_signature.unwrap_or_default()) {
+        return 401;
+    }
+    // {"id":"01kb2m5x9qj4v8n3c7d6e5f4g3","external_id":"order-42","status":"partial"}
+    let order: tronzap_sdk::serde_json::Value = match tronzap_sdk::serde_json::from_slice(body) {
+        Ok(order) => order,
+        Err(_) => return 400,
+    };
+    println!("{} {}", order["id"], order["status"]);
+    200
+}
+```
+
 ## Обработка ошибок
 
 Любой сбой — это `TronzapError`. Сопоставляйте варианты, чтобы обработать
@@ -343,8 +427,8 @@ TronzapError
 
 `ApiError` содержит HTTP-статус (`status()`), код ошибки API (`code()` и
 `error_code()`), ключ ошибки, сообщение, ID запроса, сырое тело ответа (`body()`)
-и, для HTTP 429, задержку из `Retry-After`. `SerializationError` тоже содержит
-статус и сырое тело.
+поле `result`, пришедшее с ошибкой (`result()`), и сколько ждать перед повтором
+(`retry_after()`). `SerializationError` тоже содержит статус и сырое тело.
 
 ```rust,no_run
 use tronzap_sdk::requests::EnergyTransactionRequest;
@@ -382,6 +466,31 @@ async fn buy(client: &TronzapClient) {
 часть — с 4xx или 5xx, поэтому читаемый payload с ненулевым кодом всегда
 сообщается с этим кодом, а не как голая HTTP-ошибка.
 
+`ApiError::result()` — поле `result`, которое API вернул вместе с ошибкой, в виде
+`serde_json::Value`. Данные `BulkPriceChanged` и `BulkNoValidItems` SDK читает в
+`ApiError::bulk_calculation()` и `ApiError::bulk_rejected()`. Лимит запросов — это
+`ApiError` с `ErrorCode::RateLimited` от API или HTTP 429 без кода, например от
+прокси; `is_rate_limited()` равен `true` в обоих случаях. `retry_after()` берётся
+из заголовка `Retry-After` (секунды или HTTP-дата) или поля `retry_after` и равен
+`None`, если сервер не сообщил, сколько ждать:
+
+```rust,no_run
+use std::time::Duration;
+
+use tronzap_sdk::requests::BulkHistoryRequest;
+use tronzap_sdk::{ErrorCode, TronzapClient, TronzapError};
+
+async fn history(client: &TronzapClient) -> tronzap_sdk::Result<()> {
+    match client.get_bulk_history(&BulkHistoryRequest::new()).await {
+        Err(TronzapError::Api(e)) if e.error_code() == Some(ErrorCode::RateLimited) => {
+            tokio::time::sleep(e.retry_after().unwrap_or(Duration::from_secs(60))).await;
+        }
+        result => println!("{} bulk order(s)", result?.total),
+    }
+    Ok(())
+}
+```
+
 ### Коды ошибок API
 
 | Код | Константа | Описание |
@@ -400,6 +509,14 @@ async fn buy(client: &TronzapClient) {
 | 30 | `AmlCheckNotFound` | AML-проверка не найдена |
 | 35 | `ServiceNotAvailable` | Сервис недоступен |
 | 50 | `InvalidBandwidthAmount` | Неверное количество bandwidth |
+| 90 | `BulkNotFound` | Массовый заказ не найден |
+| 91 | `BulkExpired` | Расчёт истёк, рассчитайте заново |
+| 92 | `BulkPriceChanged` | Цена изменилась; новый расчёт в `bulk_calculation()` |
+| 93 | `BulkTooManyItems` | Больше 10 000 строк |
+| 94 | `BulkNoValidItems` | Нет корректных строк; они в `bulk_rejected()` |
+| 95 | `BulkResourceNotSupported` | Массово можно заказать только энергию |
+| 96 | `PayloadTooLarge` | Слишком большое тело запроса (HTTP 413) |
+| 429 | `RateLimited` | Слишком много запросов; подождите `retry_after()`, если указано |
 | 500 | `InternalServerError` | Внутренняя ошибка сервера: обратитесь в поддержку |
 
 Константы — варианты enum `ErrorCode`. Для кода, который эта версия SDK не знает,

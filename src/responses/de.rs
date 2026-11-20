@@ -3,6 +3,8 @@
 // Decimals are (de)serialized here rather than through rust_decimal's serde
 // features, whose output format another crate in the build could switch.
 
+use std::collections::BTreeMap;
+
 use serde::de::{DeserializeOwned, Error};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
@@ -193,6 +195,17 @@ pub(crate) mod opt_decimal {
             Some(d) => s.collect_str(d),
             None => s.serialize_none(),
         }
+    }
+}
+
+pub(crate) fn u64_map<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<String, u64>, D::Error> {
+    match value(d)? {
+        Value::Null => Ok(BTreeMap::new()),
+        Value::Array(a) if a.is_empty() => Ok(BTreeMap::new()),
+        Value::Object(o) => {
+            o.into_iter().map(|(k, v)| u64(v).map(|n| (k, n)).map_err(D::Error::custom)).collect()
+        }
+        other => Err(D::Error::custom(format!("expected an object, found {other}"))),
     }
 }
 

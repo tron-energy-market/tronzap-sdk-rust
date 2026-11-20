@@ -13,8 +13,8 @@ use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 
 use crate::models::{
-    AmlCheckType, AmlDirection, AmlRiskLevel, AmlStatus, Decimal, Service, SubscriptionStatus, Timestamp,
-    TransactionStatus,
+    AmlCheckType, AmlDirection, AmlRiskLevel, AmlStatus, BulkStatus, Decimal, Service, SubscriptionStatus,
+    Timestamp, TransactionStatus,
 };
 
 /// The resources on sale and their prices.
@@ -713,6 +713,152 @@ pub struct SubscriptionHistory {
     /// The subscriptions on this page, newest first.
     #[serde(default, deserialize_with = "de::list")]
     pub items: Vec<Subscription>,
+}
+
+/// The price of a bulk energy order. Nothing is charged until the order is
+/// started with [`bulk_create`](crate::TronzapClient::bulk_create).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct BulkCalculation {
+    /// The calculation identifier to pass to
+    /// [`BulkCreateRequest::new`](crate::requests::BulkCreateRequest::new).
+    #[serde(default, deserialize_with = "de::string")]
+    pub id: String,
+    /// [`BulkStatus::Draft`] for a calculation.
+    #[serde(default = "de::unknown", deserialize_with = "de::wire_enum")]
+    pub status: BulkStatus,
+    /// The resource ordered, `energy`.
+    #[serde(default, deserialize_with = "de::string")]
+    pub resource: String,
+    /// The rental duration in hours.
+    #[serde(default, deserialize_with = "de::u32")]
+    pub duration: u32,
+    /// The price of the accepted rows, in TRX.
+    #[serde(default, with = "de::decimal")]
+    pub total_amount: Decimal,
+    /// How many rows will be ordered.
+    #[serde(default, deserialize_with = "de::u64")]
+    pub accepted: u64,
+    /// How many rows were rejected.
+    #[serde(default, deserialize_with = "de::u64")]
+    pub rejected_count: u64,
+    /// The rejected rows with their row numbers and reasons.
+    #[serde(default, deserialize_with = "de::list")]
+    pub rejected: Vec<BulkRejectedRow>,
+    /// When the calculation expires, 10 minutes after it was made.
+    #[serde(default, deserialize_with = "de::opt_timestamp")]
+    pub expires_at: Option<Timestamp>,
+}
+
+/// A row of a bulk calculation that was rejected and will not be ordered.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct BulkRejectedRow {
+    /// The position of the row in the request, starting at 1.
+    #[serde(default, deserialize_with = "de::u64")]
+    pub row: u64,
+    /// The address as it was sent.
+    #[serde(default, deserialize_with = "de::string")]
+    pub address: String,
+    /// Why the row was rejected, such as `invalid_address`, `invalid_amount` or
+    /// `duplicate`.
+    #[serde(default, deserialize_with = "de::string")]
+    pub reason: String,
+}
+
+#[derive(Default, Deserialize)]
+pub(crate) struct BulkRejectedRows {
+    #[serde(default, deserialize_with = "de::list")]
+    pub(crate) rejected: Vec<BulkRejectedRow>,
+}
+
+/// A bulk energy order and its progress.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct BulkOrder {
+    /// The identifier TronZap assigned.
+    #[serde(default, deserialize_with = "de::string")]
+    pub id: String,
+    /// The external identifier you set, if any.
+    #[serde(default, deserialize_with = "de::opt_string")]
+    pub external_id: Option<String>,
+    /// The current state. `Completed`, `Partial` and `Failed` are final.
+    #[serde(default = "de::unknown", deserialize_with = "de::wire_enum")]
+    pub status: BulkStatus,
+    /// The resource ordered, `energy`.
+    #[serde(default, deserialize_with = "de::string")]
+    pub resource: String,
+    /// The rental duration in hours.
+    #[serde(default, deserialize_with = "de::u32")]
+    pub duration: u32,
+    /// Whether addresses are bought even if the price rose, within
+    /// `max_price_increase`.
+    #[serde(default, deserialize_with = "de::bool")]
+    pub force: bool,
+    /// The allowed price increase in percent.
+    #[serde(default, deserialize_with = "de::u32")]
+    pub max_price_increase: u32,
+    /// The URL called when the order becomes final, if any.
+    #[serde(default, deserialize_with = "de::opt_string")]
+    pub webhook_url: Option<String>,
+    /// How many rows the order has.
+    #[serde(default, deserialize_with = "de::u64")]
+    pub total: u64,
+    /// How many rows are processed.
+    #[serde(default, deserialize_with = "de::u64")]
+    pub processed: u64,
+    /// How many rows received energy.
+    #[serde(default, deserialize_with = "de::u64")]
+    pub delivered: u64,
+    /// How many rows failed.
+    #[serde(default, deserialize_with = "de::u64")]
+    pub failed: u64,
+    /// How many rows wait for a manual check.
+    #[serde(default, deserialize_with = "de::u64")]
+    pub in_review: u64,
+    /// How many rows were skipped without a charge.
+    #[serde(default, deserialize_with = "de::u64")]
+    pub skipped: u64,
+    /// The skipped rows by reason, such as `address_not_activated` or
+    /// `price_increased`.
+    #[serde(default, deserialize_with = "de::u64_map")]
+    pub skipped_by_reason: BTreeMap<String, u64>,
+    /// How many rows the calculation rejected.
+    #[serde(default, deserialize_with = "de::u64")]
+    pub rejected_count: u64,
+    /// The calculated price of the order, in TRX.
+    #[serde(default, with = "de::decimal")]
+    pub total_amount: Decimal,
+    /// The amount charged so far, in TRX.
+    #[serde(default, with = "de::decimal")]
+    pub charged_amount: Decimal,
+    /// When the order was created.
+    #[serde(default, deserialize_with = "de::opt_timestamp")]
+    pub created_at: Option<Timestamp>,
+    /// When processing started.
+    #[serde(default, deserialize_with = "de::opt_timestamp")]
+    pub started_at: Option<Timestamp>,
+    /// When the order became final. `None` while it runs.
+    #[serde(default, deserialize_with = "de::opt_timestamp")]
+    pub finalized_at: Option<Timestamp>,
+}
+
+/// One page of bulk orders.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct BulkHistory {
+    /// The page number, starting at 1.
+    #[serde(default, deserialize_with = "de::u32")]
+    pub page: u32,
+    /// The page size.
+    #[serde(default, deserialize_with = "de::u32")]
+    pub per_page: u32,
+    /// The number of bulk orders across all pages.
+    #[serde(default, deserialize_with = "de::u64")]
+    pub total: u64,
+    /// The orders on this page, newest first.
+    #[serde(default, deserialize_with = "de::list")]
+    pub items: Vec<BulkOrder>,
 }
 
 #[cfg(test)]
